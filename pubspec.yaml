@@ -46,6 +46,7 @@ dependencies:
   web_socket_channel: ^3.0.3
   flutter_tts: ^4.2.3
   file_picker: ^8.1.2
+  alarm: ^2.1.1
   
 
   # The following adds the Cupertino Icons font to your application.
@@ -60,7 +61,7 @@ dev_dependencies:
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^6.0.0
+  flutter_lints: ^5.0.0
 
 
 # For information on the generic Dart part of this file, see the
@@ -80,6 +81,7 @@ flutter:
     - assets/model/
     - assets/model/model_file_30epochs.tflite
     - .env
+    - assets/alarm.mp3
 
 
 
