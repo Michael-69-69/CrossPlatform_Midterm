@@ -1,13 +1,10 @@
 import 'dart:io';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'mcp_client.dart';
 
 class GeminiService {
   late GenerativeModel _model;
   final List<String> _sessionMemory = [];
-  McpClient? _mcp;
-  String? _sessionId;
 
   GeminiService() {
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
@@ -17,14 +14,10 @@ class GeminiService {
     _model = GenerativeModel(model: 'gemini-2.5-flash', apiKey: apiKey);
   }
 
+  // Skip MCP session management
   Future<void> _ensureSession() async {
-    if (_mcp == null) {
-      _mcp = await McpClient.connect();
-    }
-    if (_sessionId == null) {
-      final result = await _mcp!.call('init_session', {'user_id': 'anonymous'});
-      _sessionId = (result as Map)['session_id'] as String;
-    }
+    // MCP disabled - do nothing
+    return;
   }
 
   // Seeds in-memory session from a recalled persisted string
@@ -40,9 +33,7 @@ class GeminiService {
   }) async {
     try {
       _sessionMemory.add(text); // Store user input in memory
-      final memoryContext = _sessionMemory.join(
-        ' ',
-      ); // Build context from memory
+      final memoryContext = _sessionMemory.join(' '); // Build context from memory
 
       final parts = <Part>[];
       String prompt =
@@ -75,11 +66,11 @@ class GeminiService {
       final content = [Content.multi(parts)];
       final response = await _model.generateContent(content);
 
-      // Save to MCP for persistence
-      await _saveToMcp(memoryContext);
+      // Skip MCP save
       return response.text ?? 'No response from AI.';
     } catch (e) {
-      throw Exception('Gemini API error: $e');
+      print('Gemini API error: $e');
+      return 'Sorry, I couldn’t process that. Try again!';
     }
   }
 
@@ -115,51 +106,17 @@ class GeminiService {
   }
 
   Future<void> _saveToMcp(String memory) async {
-    try {
-      await _ensureSession();
-      await _mcp!.call('update_context', {
-        'session_id': _sessionId,
-        'new_context': [
-          {'text': memory},
-        ],
-      });
-    } catch (e) {
-      // Log but do not fail user flow
-      // ignore: avoid_print
-      print('MCP save failed: $e');
-    }
+    // MCP disabled - do nothing
+    return;
   }
 
   Future<String> recallSession() async {
-    try {
-      await _ensureSession();
-      final result = await _mcp!.call('get_context', {
-        'session_id': _sessionId,
-      });
-      final contextList = (result as Map)['context'] as List<dynamic>?;
-      if (contextList == null) return '';
-      final texts =
-          contextList
-              .map((e) => (e as Map<String, dynamic>)['text'])
-              .whereType<String>()
-              .toList();
-      return texts.join(' ');
-    } catch (e) {
-      // ignore: avoid_print
-      print('MCP recall failed: $e');
-      return '';
-    }
+    // Return empty string since MCP is disabled
+    return '';
   }
 
   void clearSession() async {
     _sessionMemory.clear();
-    try {
-      await _ensureSession();
-      await _mcp!.call('clear_session', {'session_id': _sessionId});
-      _sessionId = null;
-    } catch (e) {
-      // ignore: avoid_print
-      print('MCP clear failed: $e');
-    }
+    // MCP disabled - no server call needed
   }
 }
