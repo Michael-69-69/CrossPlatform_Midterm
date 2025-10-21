@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:intl/intl.dart'; // Added for date formatting
 
 class MemoKeeperPage extends StatefulWidget {
   @override
@@ -13,22 +14,26 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
 
   String _currentGlb = 'assets/glb/c_neutral.glb';
   bool _reloadModel = false;
+  
+  // NEW: State for search
+  final TextEditingController _searchController = TextEditingController();
+  String _searchText = '';
 
-  // Mock memo data - replace with real API calls
+  // UPDATED: Mock memo data using DateTime
   List<Memo> _memos = [
     Memo(
       id: 1,
       title: 'Project Deadline',
       content: 'Submit the Flutter app by November 30th',
-      createdDate: 'Oct 18, 2024',
-      expiryDate: 'Nov 30, 2024',
+      createdDate: DateTime(2025, 10, 18),
+      expiryDate: DateTime(2025, 11, 30),
       priority: MemoPriority.high,
     ),
     Memo(
       id: 2,
       title: 'Team Meeting',
       content: 'Weekly sync with the development team at 2 PM',
-      createdDate: 'Oct 17, 2024',
+      createdDate: DateTime(2025, 10, 17),
       expiryDate: null,
       priority: MemoPriority.medium,
     ),
@@ -36,17 +41,25 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
       id: 3,
       title: 'Birthday Gift',
       content: 'Buy gift for Sarah\'s birthday next month',
-      createdDate: 'Oct 15, 2024',
-      expiryDate: 'Nov 15, 2024',
+      createdDate: DateTime(2025, 10, 15),
+      expiryDate: DateTime(2025, 11, 15),
       priority: MemoPriority.low,
     ),
     Memo(
       id: 4,
       title: 'Code Review',
       content: 'Review pull requests from the team',
-      createdDate: 'Oct 16, 2024',
-      expiryDate: null,
+      createdDate: DateTime(2025, 10, 16),
+      expiryDate: DateTime.now().add(Duration(days: 2)), // "Expires in 2 days"
       priority: MemoPriority.high,
+    ),
+    Memo(
+      id: 5,
+      title: 'Groceries',
+      content: 'Milk, Eggs, Bread',
+      createdDate: DateTime(2025, 10, 20),
+      expiryDate: DateTime.now().subtract(Duration(days: 1)), // "Expired"
+      priority: MemoPriority.low,
     ),
   ];
 
@@ -58,11 +71,19 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
     _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+
+    // NEW: Listener for search
+    _searchController.addListener(() {
+      setState(() {
+        _searchText = _searchController.text;
+      });
+    });
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
+    _searchController.dispose(); // NEW: Dispose controller
     super.dispose();
   }
 
@@ -87,6 +108,44 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
         return 'Low';
     }
   }
+  
+  // NEW: Helper for expiry countdown
+  String _getExpiryText(DateTime? expiryDate) {
+    if (expiryDate == null) {
+      return '';
+    }
+    final now = DateTime.now();
+    final difference = expiryDate.difference(now);
+
+    if (difference.isNegative && difference.inDays < -1) {
+      return 'Expired';
+    } else if (difference.inDays == 0 || (difference.isNegative && difference.inDays == 0)) {
+      return 'Expires today';
+    } else if (difference.inDays < 0) {
+      return 'Expired';
+    } else if (difference.inDays < 7) {
+      return 'Expires in ${difference.inDays + 1} days';
+    } else {
+      return 'Expires ${DateFormat.yMMMd().format(expiryDate)}';
+    }
+  }
+
+  // NEW: Helper for expiry color
+  Color _getExpiryColor(DateTime? expiryDate) {
+    if (expiryDate == null) {
+      return Colors.grey;
+    }
+    final now = DateTime.now();
+    final difference = expiryDate.difference(now);
+
+    if (difference.isNegative || difference.inDays == 0) {
+      return Colors.red;
+    } else if (difference.inDays < 7) {
+      return Colors.orange;
+    } else {
+      return Colors.grey;
+    }
+  }
 
   void _deleteMemo(int id) {
     setState(() {
@@ -97,8 +156,152 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
     );
   }
 
+  // NEW: Add/Edit Memo Function
+  void _showAddOrEditMemoDialog({Memo? existingMemo}) {
+    final _titleController = TextEditingController(text: existingMemo?.title);
+    final _contentController = TextEditingController(text: existingMemo?.content);
+    MemoPriority _selectedPriority = existingMemo?.priority ?? MemoPriority.medium;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true, // Important for keyboard
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+                top: 24,
+                left: 24,
+                right: 24,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      existingMemo == null ? 'New Memo' : 'Edit Memo',
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    TextField(
+                      controller: _titleController,
+                      decoration: InputDecoration(
+                        labelText: 'Title',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    TextField(
+                      controller: _contentController,
+                      decoration: InputDecoration(
+                        labelText: 'Content',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      maxLines: 4,
+                    ),
+                    SizedBox(height: 16),
+                    Text('Priority', style: Theme.of(context).textTheme.titleMedium),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: MemoPriority.values.map((priority) {
+                        return ChoiceChip(
+                          label: Text(_getPriorityText(priority)),
+                          selected: _selectedPriority == priority,
+                          selectedColor: _getPriorityColor(priority).withOpacity(0.3),
+                          onSelected: (isSelected) {
+                            if (isSelected) {
+                              setModalState(() {
+                                _selectedPriority = priority;
+                              });
+                            }
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: Text('Cancel'),
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: () {
+                              final title = _titleController.text;
+                              final content = _contentController.text;
+                              if (title.isEmpty || content.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Title and content cannot be empty!')),
+                                );
+                                return;
+                              }
+
+                              if (existingMemo == null) {
+                                // Add new memo
+                                final newMemo = Memo(
+                                  id: DateTime.now().millisecondsSinceEpoch, // Simple unique ID
+                                  title: title,
+                                  content: content,
+                                  createdDate: DateTime.now(),
+                                  expiryDate: null, // Can add expiry date picker later
+                                  priority: _selectedPriority,
+                                );
+                                setState(() {
+                                  _memos.insert(0, newMemo);
+                                });
+                              } else {
+                                // Update existing memo
+                                final updatedMemo = existingMemo.copyWith(
+                                  title: title,
+                                  content: content,
+                                  priority: _selectedPriority,
+                                );
+                                setState(() {
+                                  final index = _memos.indexWhere((m) => m.id == existingMemo.id);
+                                  if (index != -1) {
+                                    _memos[index] = updatedMemo;
+                                  }
+                                });
+                              }
+                              Navigator.pop(context);
+                            },
+                            child: Text('Save'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 24),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    // NEW: Filter memos based on search
+    final filteredMemos = _memos.where((memo) {
+      final titleLower = memo.title.toLowerCase();
+      final contentLower = memo.content.toLowerCase();
+      final searchLower = _searchText.toLowerCase();
+      return titleLower.contains(searchLower) || contentLower.contains(searchLower);
+    }).toList();
+
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
@@ -113,9 +316,8 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
           IconButton(
             icon: Icon(Icons.add),
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Create new memo coming soon!')),
-              );
+              // UPDATED: Hook up add function
+              _showAddOrEditMemoDialog();
             },
           ),
         ],
@@ -129,7 +331,27 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
               children: [
                 _buildMemoStatsCard(),
                 SizedBox(height: 24),
-                _buildMemosSection(),
+                // NEW: Search Bar
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16.0),
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      labelText: 'Search memos...',
+                      prefixIcon: Icon(Icons.search),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      suffixIcon: _searchText.isNotEmpty
+                          ? IconButton(
+                              icon: Icon(Icons.clear),
+                              onPressed: () {
+                                _searchController.clear();
+                              },
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+                _buildMemosSection(filteredMemos), // UPDATED: Pass filtered list
                 SizedBox(height: 100),
               ],
             ),
@@ -272,7 +494,8 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
     );
   }
 
-  Widget _buildMemosSection() {
+  // UPDATED: Accept filtered list
+  Widget _buildMemosSection(List<Memo> memos) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -283,16 +506,16 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
           ),
         ),
         SizedBox(height: 12),
-        if (_memos.isEmpty)
+        if (memos.isEmpty)
           Center(
             child: Padding(
               padding: EdgeInsets.symmetric(vertical: 32),
               child: Column(
                 children: [
-                  Icon(Icons.note_outlined, size: 48, color: Colors.grey),
+                  Icon(Icons.search_off, size: 48, color: Colors.grey),
                   SizedBox(height: 16),
                   Text(
-                    'No memos yet',
+                    _searchText.isEmpty ? 'No memos yet' : 'No memos found',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: Colors.grey,
                     ),
@@ -302,12 +525,16 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
             ),
           )
         else
-          ..._memos.map((memo) => _buildMemoCard(memo)).toList(),
+          ...memos.map((memo) => _buildMemoCard(memo)).toList(),
       ],
     );
   }
 
   Widget _buildMemoCard(Memo memo) {
+    // NEW: Get expiry text and color
+    final expiryText = _getExpiryText(memo.expiryDate);
+    final expiryColor = _getExpiryColor(memo.expiryDate);
+
     return Card(
       margin: EdgeInsets.only(bottom: 12),
       elevation: 2,
@@ -378,7 +605,8 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
                         ),
                       ),
                       Text(
-                        memo.createdDate,
+                        // UPDATED: Format DateTime
+                        DateFormat.yMMMd().format(memo.createdDate),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           fontWeight: FontWeight.w500,
                         ),
@@ -386,22 +614,23 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
                     ],
                   ),
                 ),
-                if (memo.expiryDate != null)
+                // UPDATED: Use expiryText
+                if (expiryText.isNotEmpty)
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Expires',
+                          'Status',
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: Colors.grey,
                           ),
                         ),
                         Text(
-                          memo.expiryDate!,
+                          expiryText,
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             fontWeight: FontWeight.w500,
-                            color: Colors.orange,
+                            color: expiryColor,
                           ),
                         ),
                       ],
@@ -415,9 +644,8 @@ class _MemoKeeperPageState extends State<MemoKeeperPage> with TickerProviderStat
                 Expanded(
                   child: OutlinedButton(
                     onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Edit memo coming soon!')),
-                      );
+                      // UPDATED: Hook up edit function
+                      _showAddOrEditMemoDialog(existingMemo: memo);
                     },
                     child: Text('Edit'),
                   ),
@@ -498,8 +726,8 @@ class Memo {
   final int id;
   final String title;
   final String content;
-  final String createdDate;
-  final String? expiryDate;
+  final DateTime createdDate; // UPDATED: Use DateTime
+  final DateTime? expiryDate; // UPDATED: Use DateTime
   final MemoPriority priority;
 
   Memo({
@@ -510,6 +738,23 @@ class Memo {
     required this.expiryDate,
     required this.priority,
   });
+
+  // NEW: copyWith method for easier updates
+  Memo copyWith({
+    String? title,
+    String? content,
+    DateTime? expiryDate,
+    MemoPriority? priority,
+  }) {
+    return Memo(
+      id: this.id,
+      title: title ?? this.title,
+      content: content ?? this.content,
+      createdDate: this.createdDate,
+      expiryDate: expiryDate ?? this.expiryDate,
+      priority: priority ?? this.priority,
+    );
+  }
 }
 
 enum MemoPriority { high, medium, low }
