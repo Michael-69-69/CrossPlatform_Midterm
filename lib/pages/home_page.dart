@@ -40,6 +40,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   bool _showTutorial = false;
   List<Map<String, dynamic>> _recentActivity = [];
+
+  // NEW: State for sliding panel
+  final DraggableScrollableController _scrollController = DraggableScrollableController();
+  bool _isPanelExpanded = false;
+
   @override
   void initState() {
     super.initState();
@@ -56,6 +61,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _ensurePermissions();
     Alarm.init();
     _welcomeUser(); // Added welcome message call
+
+    // NEW: Listener for panel state
+    _scrollController.addListener(_onScroll);
+  }
+
+  // NEW: Listener to update panel state
+  void _onScroll() {
+    double position = _scrollController.size;
+    // Check if it's near the max size
+    if (position > 0.75 && !_isPanelExpanded) {
+      setState(() {
+        _isPanelExpanded = true;
+      });
+    }
+    // Check if it's near the min size
+    else if (position < 0.2 && _isPanelExpanded) {
+      setState(() {
+        _isPanelExpanded = false;
+      });
+    }
   }
 
   // Added welcome message method
@@ -100,6 +125,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void dispose() {
     _pulseController.dispose();
     _shakeController.dispose();
+    _scrollController.dispose(); // NEW
     _flutterTts.stop();
     _speechService.stop(null);
     super.dispose();
@@ -418,206 +444,96 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         return Stack(
           children: [
             Scaffold(
-              body: SafeArea(
-                child: Container(
-                  width: double.infinity,
-                  height: double.infinity,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Theme.of(context).colorScheme.primary.withOpacity(0.08),
-                        Theme.of(context).colorScheme.secondary.withOpacity(0.05),
-                      ],
+              // --- APPBAR UPDATED ---
+              appBar: AppBar(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                // NEW: Animated bot icon in AppBar
+                leading: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 300),
+                  opacity: _isPanelExpanded ? 1.0 : 0.0,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Icon(
+                      Icons.smart_toy,
+                      size: 36,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('STARBOY',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .displayMedium
-                                        ?.copyWith(fontWeight: FontWeight.w800)),
-                                Text(
-                                  'AI Personal Assistant',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
-                                ),
-                              ],
-                            ),
-                            Row( // Wrapper Row for icons
-                              children: [
-                                IconButton(
-                                  tooltip: 'Show voice commands',
-                                  onPressed: _showHelpTutorial,
-                                  icon: const Icon(Icons.help_outline),
-                                ),
-                                IconButton(
-                                  tooltip: 'Check backend health',
-                                  onPressed: () async {
-                                    try {
-                                      final status = await _speechService.initializeOnDemand();
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text(status == 'ready' ? 'Backend OK' : status)),
-                                      );
-                                    } catch (e) {
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text('Health check failed: $e')),
-                                      );
-                                    }
-                                  },
-                                  icon: const Icon(Icons.health_and_safety_outlined),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      Expanded(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          child: Column(
-                            children: [
-                              // Avatar and Response Section
-                              SizedBox(
-                                height: 250,
-                                child: Center(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      AnimatedBuilder(
-                                        animation: Listenable.merge([_pulseAnimation, _shakeAnimation]),
-                                        builder: (context, _) {
-                                          return Transform.scale(
-                                            scale: _pulseAnimation.value,
-                                            child: Icon(
-                                              _isSpeaking ? Icons.mic : Icons.smart_toy,
-                                              size: 120,
-                                              color: Theme.of(context).colorScheme.primary.withOpacity(0.8),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                      const SizedBox(height: 12),
-                                      if (_isLoading)
-                                        const CircularProgressIndicator()
-                                      // --- Replaced Text with Typewriter Effect ---
-                                      else if (_responseText.isNotEmpty)
-                                        Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                                          child: AnimatedTextKit(
-                                            key: ValueKey(_responseText), // Ensures it reruns on new text
-                                            animatedTexts: [
-                                              TypewriterAnimatedText(
-                                                _responseText,
-                                                textAlign: TextAlign.center,
-                                                textStyle: const TextStyle(fontSize: 14, color: Colors.black87),
-                                                speed: const Duration(milliseconds: 50),
-                                              ),
-                                            ],
-                                            totalRepeatCount: 1,
-                                            isRepeatingAnimation: false,
-                                          ),
-                                        ),
-                                      // --- End of replacement ---
-                                    ],
-                                  ),
-                                ),
-                              ),
-
-                              // Quick Action Cards
-                              _buildQuickActionCards(),
-                              
-                              const SizedBox(height: 16),
-
-                              // Recent Activity Timeline
-                              _buildRecentActivity(), // Updated to include empty state
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: GestureDetector(
-                                onLongPressStart: (_) => _onHoldMicStart(),
-                                onLongPressEnd: (_) => _onHoldMicEnd(),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 18),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary,
-                                    borderRadius: BorderRadius.circular(16),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
-                                        blurRadius: 10,
-                                        offset: const Offset(0, 6),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(Icons.mic, color: Colors.white),
-                                      const SizedBox(width: 8),
-                                      Text(_isSpeaking ? 'Listening…' : 'Hold to Talk',
-                                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: InkWell(
-                                onTap: _onPickMedia,
-                                borderRadius: BorderRadius.circular(16),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 18),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.secondaryContainer,
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.add_photo_alternate,
-                                          color: Theme.of(context).colorScheme.onSecondaryContainer),
-                                      const SizedBox(width: 8),
-                                      const Text('Add Media', style: TextStyle(fontWeight: FontWeight.bold)),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                ),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('STARBOY',
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineMedium
+                            ?.copyWith(fontWeight: FontWeight.w800)),
+                    Text(
+                      'AI Personal Assistant',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                    ),
+                  ],
+                ),
+                actions: [
+                  IconButton(
+                    tooltip: 'Show voice commands',
+                    onPressed: _showHelpTutorial,
+                    icon: const Icon(Icons.help_outline),
+                  ),
+                  IconButton(
+                    tooltip: 'Check backend health',
+                    onPressed: () async {
+                      try {
+                        final status = await _speechService.initializeOnDemand();
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(status == 'ready' ? 'Backend OK' : status)),
+                        );
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Health check failed: $e')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.health_and_safety_outlined),
+                  ),
+                ],
+              ),
+              // --- BODY UPDATED ---
+              body: Container(
+                width: double.infinity,
+                height: double.infinity,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Theme.of(context).colorScheme.primary.withOpacity(0.08),
+                      Theme.of(context).colorScheme.secondary.withOpacity(0.05),
                     ],
                   ),
                 ),
+                // NEW: Stack for bot and sliding panel
+                child: Stack(
+                  children: [
+                    // --- LAYER 1: The Maximized Bot ---
+                    _buildMaximizedBot(),
+
+                    // --- LAYER 2: The Sliding Panel ---
+                    _buildSlidingPanel(),
+                  ],
+                ),
               ),
-            ), // End of Scaffold
+              // --- BOTTOMNAVBAR UPDATED ---
+              bottomNavigationBar: _buildBottomMicBar(),
+            ), 
             
-            // Tutorial Overlay
+            // Tutorial Overlay (remains the same)
             if (_showTutorial)
               Container(
                 color: Colors.black.withOpacity(0.8),
@@ -696,7 +612,205 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   );
 }
 
-  // Moved helper widgets into the State class so they can access state/context
+  // --- NEW WIDGETS ---
+
+  Widget _buildMaximizedBot() {
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 200),
+      opacity: _isPanelExpanded ? 0.0 : 1.0, // Fade out when panel expands
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedBuilder(
+              animation: Listenable.merge([_pulseAnimation, _shakeAnimation]),
+              builder: (context, _) {
+                return Transform.scale(
+                  scale: _pulseAnimation.value,
+                  child: Icon(
+                    _isSpeaking ? Icons.mic : Icons.smart_toy,
+                    size: 120,
+                    color: Theme.of(context).colorScheme.primary.withOpacity(0.8),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+            if (_isLoading)
+              const CircularProgressIndicator()
+            // --- Replaced Text with Typewriter Effect ---
+            else if (_responseText.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                child: AnimatedTextKit(
+                  key: ValueKey(_responseText), // Ensures it reruns on new text
+                  animatedTexts: [
+                    TypewriterAnimatedText(
+                      _responseText,
+                      textAlign: TextAlign.center,
+                      textStyle: const TextStyle(fontSize: 14, color: Colors.black87),
+                      speed: const Duration(milliseconds: 50),
+                    ),
+                  ],
+                  totalRepeatCount: 1,
+                  isRepeatingAnimation: false,
+                ),
+              ),
+            // --- End of replacement ---
+            const SizedBox(height: 100), // Space for bottom bar
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSlidingPanel() {
+    return DraggableScrollableSheet(
+      controller: _scrollController,
+      initialChildSize: 0.15, // Start minimized
+      minChildSize: 0.15,
+      maxChildSize: 0.85, // Max height
+      builder: (context, scrollController) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            boxShadow: [
+              BoxShadow(
+                blurRadius: 10,
+                color: Colors.black.withOpacity(0.1),
+              ),
+            ],
+          ),
+          child: SingleChildScrollView(
+            controller: scrollController,
+            child: Column(
+              children: [
+                _buildPanelHandle(),
+                // This is the content that was in the old SingleChildScrollView
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    children: [
+                      _buildQuickActionCards(),
+                      const SizedBox(height: 16),
+                      _buildRecentActivity(),
+                      const SizedBox(height: 24), // Add padding at bottom
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPanelHandle() {
+    return InkWell(
+      onTap: () {
+        if (_isPanelExpanded) {
+          _scrollController.animateTo(
+            0.15,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        } else {
+          _scrollController.animateTo(
+            0.85,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        }
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 8.0),
+        child: Column(
+          children: [
+            Container( // The "grip"
+              width: 40,
+              height: 5,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            Icon(
+              _isPanelExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+              color: Colors.grey.shade600,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomMicBar() {
+    // This is the Padding(...) widget cut from the bottom of the old Column
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onLongPressStart: (_) => _onHoldMicStart(),
+              onLongPressEnd: (_) => _onHoldMicEnd(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                      blurRadius: 10,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.mic, color: Colors.white),
+                    const SizedBox(width: 8),
+                    Text(_isSpeaking ? 'Listening…' : 'Hold to Talk',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: InkWell(
+              onTap: _onPickMedia,
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.secondaryContainer,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add_photo_alternate,
+                        color: Theme.of(context).colorScheme.onSecondaryContainer),
+                    const SizedBox(width: 8),
+                    const Text('Add Media', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  // --- END NEW WIDGETS ---
+
 
   Widget _buildQuickActionCards() {
     return Column(
