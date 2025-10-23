@@ -14,12 +14,6 @@ class GeminiService {
     _model = GenerativeModel(model: 'gemini-2.5-flash', apiKey: apiKey);
   }
 
-  // Skip MCP session management
-  Future<void> _ensureSession() async {
-    // MCP disabled - do nothing
-    return;
-  }
-
   // Seeds in-memory session from a recalled persisted string
   void seedSessionMemory(String memory) {
     if (memory.isEmpty) return;
@@ -33,16 +27,25 @@ class GeminiService {
   }) async {
     try {
       _sessionMemory.add(text); // Store user input in memory
-      final memoryContext = _sessionMemory.join(' '); // Build context from memory
+      final memoryContext = _sessionMemory.join(
+        ' ',
+      ); // Build context from memory
 
       final parts = <Part>[];
       String prompt =
-          'Role: empathetic, friendly cultural companion.\n'
+          'Role: STARBOY AI Personal Assistant - empathetic, friendly cultural companion.\n'
           'Style rules:\n'
           '- Do NOT say you are an AI or assistant.\n'
           '- Speak directly to the user; no disclaimers.\n'
           '- Be concise and specific; 1 short sentence unless asked.\n'
           '- If emotions are given, reflect them briefly.\n'
+          'Available features:\n'
+          '- Check student scores: "check scores for MSSV [number]"\n'
+          '- Plan trips: "plan trip to [destination]"\n'
+          '- Save notes: "save note [content]"\n'
+          '- Set alarms: "set alarm for [time]"\n'
+          '- Navigate pages: "go to [alarm/memo/student/travel] page"\n'
+          '- Clear data: "clear all data"\n'
           'Context: Based on the user input: "$text"';
       if (emotions.isNotEmpty) {
         prompt +=
@@ -74,40 +77,68 @@ class GeminiService {
     }
   }
 
-  // Simple heuristic router that maps user text to an intent string
+  // Enhanced heuristic router that maps user text to an intent string
   Future<String> routeIntent({
     required String text,
     File? imageFile,
     List<Map<String, dynamic>> emotions = const [],
   }) async {
     final lower = text.toLowerCase();
-    if (lower.contains('email') || lower.contains('send') && lower.contains('mail')) {
-      return 'email:send';
+
+    // Navigation commands
+    if (lower.contains('go to') ||
+        lower.contains('open') ||
+        lower.contains('navigate')) {
+      if (lower.contains('alarm') || lower.contains('wake')) {
+        return 'navigate:alarm';
+      }
+      if (lower.contains('memo') ||
+          lower.contains('note') ||
+          lower.contains('notes')) {
+        return 'navigate:memo';
+      }
+      if (lower.contains('student') ||
+          lower.contains('score') ||
+          lower.contains('grade') ||
+          lower.contains('tracker')) {
+        return 'navigate:student';
+      }
+      if (lower.contains('travel') ||
+          lower.contains('trip') ||
+          lower.contains('itinerary')) {
+        return 'navigate:travel';
+      }
     }
-    if (lower.contains('note') || lower.contains('remember')) {
-      return 'notes:create';
-    }
-    if (lower.contains('alarm') || lower.contains('wake me')) {
-      return 'alarm:set';
-    }
-    if (lower.contains('attendance') || lower.contains('class')) {
-      return 'attendance:view';
-    }
-    if (lower.contains('score') || lower.contains('grade')) {
+
+    // Backend function commands
+    if (lower.contains('check score') ||
+        lower.contains('get score') ||
+        lower.contains('my grade')) {
       return 'scores:check';
     }
-    if (lower.contains('travel') || lower.contains('trip') || lower.contains('itinerary')) {
+    if (lower.contains('plan trip') ||
+        lower.contains('travel to') ||
+        lower.contains('trip to')) {
       return 'travel:plan';
     }
-    if (lower.contains('workout') || lower.contains('exercise') || lower.contains('fitness')) {
-      return 'fitness:start';
+    if (lower.contains('save note') ||
+        lower.contains('remember') ||
+        lower.contains('note down')) {
+      return 'notes:create';
     }
-    return 'general:chat';
-  }
+    if (lower.contains('set alarm') ||
+        lower.contains('wake me') ||
+        lower.contains('alarm for')) {
+      return 'alarm:set';
+    }
+    if (lower.contains('clear all') ||
+        lower.contains('delete all') ||
+        lower.contains('reset data')) {
+      return 'clear:all';
+    }
 
-  Future<void> _saveToMcp(String memory) async {
-    // MCP disabled - do nothing
-    return;
+    // General chat
+    return 'general:chat';
   }
 
   Future<String> recallSession() async {

@@ -1,4 +1,3 @@
-import 'dart:async'; // Added for Future.delayed
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,19 +5,21 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import 'package:alarm/alarm.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:animated_text_kit/animated_text_kit.dart'; // Added for typewriter
-import 'package:flutter_staggered_animations/flutter_staggered_animations.dart'; // fixed import
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:image_picker/image_picker.dart';
 import '../models/image_state.dart';
 import '../services/speech_emotion_service.dart';
 import '../services/gemini_service.dart';
+import '../services/config_service.dart';
 import 'student_tracker.dart';
-import 'alarm.dart' hide Alarm;
+import 'alarm.dart';
 import 'memo.dart';
 import 'travel.dart';
-import 'classroom.dart';
+import 'email.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -29,84 +30,49 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final SpeechEmotionService _speechService = SpeechEmotionService();
   final GeminiService _geminiService = GeminiService();
   final FlutterTts _flutterTts = FlutterTts();
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-  late AnimationController _shakeController;
-  late Animation<double> _shakeAnimation;
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnimation;
+  late final AnimationController _shakeController;
+  late final Animation<double> _shakeAnimation;
 
   bool _isSpeaking = false;
   String _responseText = '';
   bool _isLoading = false;
-
-  bool _showTutorial = false;
-  List<Map<String, dynamic>> _recentActivity = [];
-
-  // NEW: State for sliding panel
-  final DraggableScrollableController _scrollController = DraggableScrollableController();
-  bool _isPanelExpanded = false;
+  File? _recordedFile;
+  bool _showTestButtons = false;
 
   @override
   void initState() {
     super.initState();
     _setupTts();
-    _pulseController = AnimationController(duration: const Duration(milliseconds: 1600), vsync: this)
-      ..repeat(reverse: true);
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 1600),
+      vsync: this,
+    )..repeat(reverse: true);
     _pulseAnimation = Tween<double>(begin: 0.96, end: 1.04).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-    _shakeController = AnimationController(duration: const Duration(milliseconds: 300), vsync: this);
+    _shakeController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
     _shakeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _shakeController, curve: Curves.linear),
     );
     _ensurePermissions();
-    Alarm.init();
-    _welcomeUser(); // Added welcome message call
-
-    // NEW: Listener for panel state
-    _scrollController.addListener(_onScroll);
   }
 
-  // NEW: Listener to update panel state
-  void _onScroll() {
-    double position = _scrollController.size;
-    // Check if it's near the max size
-    if (position > 0.75 && !_isPanelExpanded) {
-      setState(() {
-        _isPanelExpanded = true;
-      });
-    }
-    // Check if it's near the min size
-    else if (position < 0.2 && _isPanelExpanded) {
-      setState(() {
-        _isPanelExpanded = false;
-      });
-    }
-  }
-
-  // Added welcome message method
-  void _welcomeUser() async {
-    // Wait a moment for the app to settle
-    await Future.delayed(const Duration(milliseconds: 1200));
-    if (mounted) {
-      setState(() {
-        _responseText = "Hi! How can I help you today?";
-        _isSpeaking = true;
-        _shakeController.repeat(reverse: true);
-      });
-      await _flutterTts.speak(_responseText);
-    }
-  }
-
-  void _showHelpTutorial() {
-  setState(() {
-    _showTutorial = true;
-  });
-  }
-
-  void _closeTutorial() {
-  setState(() {
-    _showTutorial = false;
-  });
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    _shakeController.dispose();
+    _flutterTts.stop();
+    _audioPlayer.dispose();
+    _audioRecorder.stop();
+    _speechService.dispose();
+    super.dispose();
   }
 
   Future<void> _setupTts() async {
@@ -114,21 +80,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     await _flutterTts.setPitch(1.0);
     await _flutterTts.setSpeechRate(0.5);
     _flutterTts.setCompletionHandler(() {
+      if (!mounted) return;
       setState(() {
         _isSpeaking = false;
         _shakeController.reset();
       });
     });
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    _shakeController.dispose();
-    _scrollController.dispose(); // NEW
-    _flutterTts.stop();
-    _speechService.stop(null);
-    super.dispose();
   }
 
   Future<void> _ensurePermissions() async {
@@ -137,6 +94,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _showAlert('Microphone permission is required.');
     }
     await Permission.camera.request();
+    await Permission.storage.request();
     await Permission.notification.request();
   }
 
@@ -146,7 +104,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       builder: (context) => AlertDialog(
         title: const Text('Notice'),
         content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
   }
@@ -154,74 +117,341 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Future<void> _onHoldMicStart() async {
     HapticFeedback.mediumImpact();
     await _ensurePermissions();
-    final status = await _speechService.initializeOnDemand();
-    if (status != 'ready') {
-      _showAlert(status.replaceAll('_', ' '));
-      return;
+    if (await _audioRecorder.hasPermission()) {
+      final directory = await getTemporaryDirectory();
+      _recordedFile = File('${directory.path}/recording.m4a');
+      await _audioRecorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 128000,
+          sampleRate: 44100,
+        ),
+        path: _recordedFile!.path,
+      );
+      setState(() {
+        _isSpeaking = true;
+        _responseText = 'Recording...';
+        _isLoading = false;
+      });
+      _shakeController.repeat(reverse: true);
+    } else {
+      _showAlert('Microphone permission denied.');
     }
-    setState(() {
-      _isSpeaking = true;
-      _responseText = '';
-      _isLoading = false;
-    });
-    _shakeController.repeat(reverse: true);
-    _speechService.startListening(_onSpeechProcessed);
   }
 
   Future<void> _onHoldMicEnd() async {
-    if (_speechService.isListening) {
-      await _speechService.stop(_onSpeechProcessed);
+    if (await _audioRecorder.isRecording()) {
+      await _audioRecorder.stop();
+      setState(() {
+        _isSpeaking = false;
+        _responseText = 'Recording stopped. Review or send?';
+      });
+      _shakeController.reset();
+      _showRecordingOptions();
     }
-    _shakeController.reset();
-    setState(() {
-      _isSpeaking = false;
-    });
   }
 
+  Future<void> _showRecordingOptions() async {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.play_arrow),
+              title: const Text('Listen'),
+              onTap: () async {
+                Navigator.pop(context);
+                if (_recordedFile != null && await _recordedFile!.exists()) {
+                  try {
+                    await _audioPlayer.stop();
+                    await _audioPlayer.play(DeviceFileSource(_recordedFile!.path));
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Playback failed: $e')),
+                    );
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('No recording available')),
+                  );
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete),
+              title: const Text('Delete'),
+              onTap: () async {
+                Navigator.pop(context);
+                if (_recordedFile != null && await _recordedFile!.exists()) {
+                  await _recordedFile!.delete();
+                }
+                setState(() {
+                  _recordedFile = null;
+                  _responseText = 'Recording deleted.';
+                });
+                await _flutterTts.speak('Recording deleted.');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.send),
+              title: const Text('Send'),
+              onTap: () {
+                Navigator.pop(context);
+                _sendRecordingOrImage();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendRecordingOrImage() async {
+    setState(() {
+      _isLoading = true;
+      _responseText = 'Processing...';
+    });
+
+    File? imageFile = Provider.of<ImageState>(context, listen: false).imageFile;
+    File? audioFile = _recordedFile;
+
+    if (audioFile != null) {
+      final result = await _speechService.transcribeAudioFile(audioFile);
+      if (result['success']) {
+        final transcribedText = result['transcribed_text'] ?? '';
+        final emotions = (result['emotions'] as List<dynamic>?)
+            ?.map((e) => {
+                  'label': e['label'] as String,
+                  'score': (e['score'] / 100).toDouble(),
+                })
+            .toList() ??
+            [];
+        final intent = await _geminiService.routeIntent(
+          text: transcribedText,
+          emotions: emotions,
+        );
+        String response = await _geminiService.generateContent(
+          text: transcribedText,
+          imageFile: imageFile,
+          emotions: emotions,
+        );
+        setState(() {
+          _isSpeaking = true;
+          _shakeController.repeat(reverse: true);
+          _responseText = response;
+          _isLoading = false;
+          _recordedFile = null;
+        });
+        await _flutterTts.speak(response);
+      } else {
+        setState(() {
+          _responseText = 'Error: ${result['error'] ?? 'Failed to process audio'}';
+          _isLoading = false;
+        });
+        await _flutterTts.speak(_responseText);
+      }
+    } else if (imageFile != null) {
+      final intent = await _geminiService.routeIntent(
+        text: 'Analyze this',
+        imageFile: imageFile,
+      );
+      String response = await _geminiService.generateContent(
+        text: 'Analyze this',
+        imageFile: imageFile,
+        emotions: [],
+      );
+      setState(() {
+        _isSpeaking = true;
+        _shakeController.repeat(reverse: true);
+        _responseText = response;
+        _isLoading = false;
+        Provider.of<ImageState>(context, listen: false).setImage(null);
+      });
+      await _flutterTts.speak(response);
+    } else {
+      setState(() {
+        _responseText = 'No recording or image to send.';
+        _isLoading = false;
+      });
+      await _flutterTts.speak(_responseText);
+    }
+  }
+
+  Future<void> _takePicture() async {
+    await _ensurePermissions();
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: ImageSource.camera);
+    if (pickedFile != null) {
+      final file = File(pickedFile.path);
+      Provider.of<ImageState>(context, listen: false).setImage(file);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Photo taken. Send when ready.')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No photo taken.')),
+      );
+    }
+  }
 
   Future<void> _onPickMedia() async {
     await _ensurePermissions();
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, allowMultiple: false);
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: false,
+    );
     if (result == null || result.files.single.path == null) return;
     final file = File(result.files.single.path!);
     Provider.of<ImageState>(context, listen: false).setImage(file);
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Image selected. Processing...')),
+      const SnackBar(content: Text('Image selected. Send when ready.')),
     );
-    // NEW: Track image activity
-    setState(() {
-      _recentActivity.insert(0, {
-        'type': 'image',
-        'content': 'Image analyzed',
-        'time': DateTime.now(),
-        'icon': Icons.image,
-      });
-      if (_recentActivity.length > 7) _recentActivity.removeLast();
-    });
+  }
+
+  Future<void> _showInputDialog(String intent, String text) async {
+    String input1 = '';
+    String input2 = '';
+    String title = 'Input Required';
+    String label1 = '';
+    String label2 = '';
+    if (intent == 'scores:check') {
+      title = 'Enter MSSV and Password';
+      label1 = 'MSSV';
+      label2 = 'Password';
+    } else if (intent == 'travel:plan') {
+      title = 'Plan a Trip';
+      label1 = 'Destination';
+      label2 = 'End Date (YYYY-MM-DD)';
+    } else if (intent == 'notes:create') {
+      title = 'Create a Note';
+      label1 = 'Note Content';
+      label2 = '';
+    }
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              decoration: InputDecoration(labelText: label1),
+              onChanged: (value) => input1 = value,
+            ),
+            if (label2.isNotEmpty)
+              TextField(
+                decoration: InputDecoration(labelText: label2),
+                obscureText: intent == 'scores:check',
+                onChanged: (value) => input2 = value,
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _processInput(intent, input1, input2, text);
+            },
+            child: const Text('Submit'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _processInput(String intent, String input1, String input2, String text) async {
+    String response = '';
     setState(() {
       _isLoading = true;
     });
-    final intent = await _geminiService.routeIntent(text: 'analyze image', imageFile: file);
-    if (intent == 'general:chat') {
-      String geminiResponse = await _geminiService.generateContent(
-        text: 'Analyze this image',
-        imageFile: file,
-        emotions: [],
-      );
-      if (geminiResponse.isNotEmpty) {
-        setState(() {
-          _isSpeaking = true;
-          _shakeController.repeat(reverse: true);
-          _responseText = geminiResponse;
-          _isLoading = false;
-        });
-        await _flutterTts.speak(geminiResponse);
+    try {
+      if (intent == 'scores:check' && input1.isNotEmpty && input2.isNotEmpty) {
+        final backendResponse = await http.post(
+          Uri.parse('${ConfigService.backendUrl}/check_scores'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'mssv': input1, 'password': input2}),
+        );
+        var jsonResponse = jsonDecode(backendResponse.body);
+        if (jsonResponse.containsKey('error')) {
+          response = 'Error: ${jsonResponse['error']}';
+        } else {
+          List<dynamic> scores = jsonResponse['scores'] ?? [];
+          if (scores.isNotEmpty) {
+            response = 'Found ${scores.length} scores for MSSV $input1: ';
+            response += scores
+                .take(3)
+                .map((s) => "${s['course']}: ${s['score']}")
+                .join(", ");
+            if (scores.length > 3) response += " and ${scores.length - 3} more";
+          } else {
+            response = 'No scores found for MSSV $input1';
+          }
+          _routeByIntent('navigate:student');
+        }
+      } else if (intent == 'travel:plan' && input1.isNotEmpty) {
+        String tripId = DateTime.now().millisecondsSinceEpoch.toString();
+        final backendResponse = await http.post(
+          Uri.parse('${ConfigService.backendUrl}/plan_trip'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'trip_id': tripId,
+            'plan': input1,
+            'end_date': input2.isNotEmpty ? input2 : DateTime.now().add(const Duration(days: 7)).toIso8601String(),
+          }),
+        );
+        var jsonResponse = jsonDecode(backendResponse.body);
+        if (jsonResponse.containsKey('error')) {
+          response = 'Error: ${jsonResponse['error']}';
+        } else {
+          response = 'Trip to $input1 planned successfully!';
+          _routeByIntent('navigate:travel');
+        }
+      } else if (intent == 'notes:create' && input1.isNotEmpty) {
+        final backendResponse = await http.post(
+          Uri.parse('${ConfigService.backendUrl}/note'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'content': input1, 'expiry': null}),
+        );
+        var jsonResponse = jsonDecode(backendResponse.body);
+        if (jsonResponse.containsKey('error')) {
+          response = 'Error: ${jsonResponse['error']}';
+        } else {
+          response = 'Note saved: $input1';
+          _routeByIntent('navigate:memo');
+        }
+      } else if (intent == 'clear:all') {
+        final backendResponse = await http.post(
+          Uri.parse('${ConfigService.backendUrl}/clear_all'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({}),
+        );
+        var jsonResponse = jsonDecode(backendResponse.body);
+        if (jsonResponse.containsKey('error')) {
+          response = 'Error: ${jsonResponse['error']}';
+        } else {
+          response = 'All data cleared successfully';
+        }
+      } else {
+        response = 'Please fill in the required fields.';
       }
-    } else {
-      _routeByIntent(intent);
+    } catch (e) {
+      response = 'Error connecting to backend: $e';
+    }
+    if (response.isNotEmpty) {
       setState(() {
+        _isSpeaking = true;
+        _shakeController.repeat(reverse: true);
+        _responseText = response;
         _isLoading = false;
       });
+      await _flutterTts.speak(response);
     }
   }
 
@@ -239,78 +469,44 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       });
       return;
     }
-    setState(() {
-      _recentActivity.insert(0, {
-      'type': 'speech',
-      'content': text.length > 50 ? text.substring(0, 50) + '...' : text,
-      'time': DateTime.now(),
-      'icon': Icons.mic,
-  });
-  if (_recentActivity.length > 7) _recentActivity.removeLast();
-  });
-
-    // Local navigation commands
     String lowerText = text.toLowerCase().trim();
-    if (lowerText.contains("alarm") && lowerText.contains("page")) {
-      Navigator.push(context, MaterialPageRoute(builder: (context) => AlarmSchedulerPage()));
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    } else if (lowerText.contains("memo") && lowerText.contains("page")) {
-      Navigator.push(context, MaterialPageRoute(builder: (context) => MemoKeeperPage()));
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    } else if (lowerText.contains("student") || lowerText.contains("tracker")) {
-      Navigator.push(context, MaterialPageRoute(builder: (context) => StudentTrackerPage()));
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    } else if (lowerText.contains("travel") && lowerText.contains("page")) {
-      Navigator.push(context, MaterialPageRoute(builder: (context) => TravelGuidePage()));
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    }
-
-    // Alarm setting via voice
-    if (lowerText.contains("set alarm")) {
-      RegExp timeRegex = RegExp(r'(\d{1,2})\s*(am|pm)', caseSensitive: false);
-      var match = timeRegex.firstMatch(lowerText);
-      if (match != null) {
-        int hour = int.parse(match.group(1)!);
-        String period = match.group(2)!.toUpperCase();
-        if (period == 'PM' && hour != 12) hour += 12;
-        if (period == 'AM' && hour == 12) hour = 0;
-        DateTime now = DateTime.now();
-        DateTime alarmTime = DateTime(now.year, now.month, now.day, hour);
-        if (alarmTime.isBefore(now)) alarmTime = alarmTime.add(Duration(days: 1));
-        await Alarm.set(
-          alarmSettings: AlarmSettings(
-            id: DateTime.now().millisecondsSinceEpoch % 10000,
-            dateTime: alarmTime,
-            assetAudioPath: 'assets/alarm.mp3',
-            notificationTitle: 'STARBOY Alarm',
-            notificationBody: 'Time to wake up!',
-          ),
-        );
-        String response = 'Alarm set for ${match.group(0)}';
+    if (lowerText.contains("go to") ||
+        lowerText.contains("open") ||
+        lowerText.contains("navigate")) {
+      if (lowerText.contains("alarm") || lowerText.contains("wake")) {
+        _routeByIntent('navigate:alarm');
         setState(() {
-          _isSpeaking = true;
-          _shakeController.repeat(reverse: true);
-          _responseText = response;
           _isLoading = false;
         });
-        await _flutterTts.speak(response);
+        return;
+      } else if (lowerText.contains("memo") || lowerText.contains("note")) {
+        _routeByIntent('navigate:memo');
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      } else if (lowerText.contains("student") ||
+          lowerText.contains("tracker") ||
+          lowerText.contains("score")) {
+        _showInputDialog('scores:check', text);
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      } else if (lowerText.contains("travel") || lowerText.contains("trip")) {
+        _showInputDialog('travel:plan', text);
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      } else if (lowerText.contains("email") || lowerText.contains("mail")) {
+        _routeByIntent('navigate:email');
+        setState(() {
+          _isLoading = false;
+        });
         return;
       }
     }
-
-    // Cultural response
     if (culturalResponse != null && culturalResponse.isNotEmpty) {
       setState(() {
         _isSpeaking = true;
@@ -321,385 +517,380 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       await _flutterTts.speak(culturalResponse);
       return;
     }
-
-    // Backend intents via /voice_command
     File? imageFile = Provider.of<ImageState>(context, listen: false).imageFile;
-    final intent = await _geminiService.routeIntent(text: text, emotions: emotions);
-    String response = '';
-    setState(() {
-      _isLoading = true;
-    });
+    final intent = await _geminiService.routeIntent(
+      text: text,
+      emotions: emotions,
+    );
     if (intent == 'general:chat') {
-      response = await _geminiService.generateContent(
+      String response = await _geminiService.generateContent(
         text: text,
         imageFile: imageFile,
         emotions: emotions,
       );
-    } else {
-      try {
-        final backendResponse = await http.post(
-          Uri.parse('http://0.0.0.0:5002/voice_command'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'command': text}),
-        );
-        var jsonResponse = jsonDecode(backendResponse.body);
-        if (jsonResponse.containsKey('error')) {
-          response = 'Error: ${jsonResponse['error']}';
-        } else if (intent == 'scores:check') {
-          response = jsonResponse['scores']
-              .map((s) => "${s['course']}: ${s['score']}")
-              .join(", ");
-        } else if (intent == 'travel:plan') {
-          response = "Trip planned: ${jsonResponse['plan']}";
-        } else if (intent == 'notes:create') {
-          response = "Note saved: ${jsonResponse['content'] ?? text}";
-        } else if (intent == 'clear:all') {
-          response = "All data cleared";
-        } else {
-          response = jsonResponse['response'] ?? 'Action completed';
-        }
-      } catch (e) {
-        response = 'Error connecting to backend: $e';
+      if (response.isNotEmpty) {
+        setState(() {
+          _isSpeaking = true;
+          _shakeController.repeat(reverse: true);
+          _responseText = response;
+          _isLoading = false;
+        });
+        await _flutterTts.speak(response);
       }
-    }
-
-    if (response.isNotEmpty) {
+    } else if (intent == 'scores:check' || intent == 'travel:plan' || intent == 'notes:create' || intent == 'clear:all') {
+      _showInputDialog(intent, text);
       setState(() {
-        _isSpeaking = true;
-        _shakeController.repeat(reverse: true);
-        _responseText = response;
         _isLoading = false;
       });
-      await _flutterTts.speak(response);
+    } else {
+      _routeByIntent(intent);
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
   void _routeByIntent(String intent) {
-    // NEW: Track navigation
-    String pageName = '';
-    IconData pageIcon = Icons.apps;
-    
     switch (intent) {
+      case 'navigate:student':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => StudentTrackerPage()),
+        );
+        break;
+      case 'navigate:travel':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => TravelGuidePage()),
+        );
+        break;
+      case 'navigate:memo':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => MemoKeeperPage()),
+        );
+        break;
+      case 'navigate:alarm':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => AlarmSchedulerPage()),
+        );
+        break;
+      case 'navigate:email':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => EmailPage()),
+        );
+        break;
       case 'scores:check':
-        pageName = 'Student Tracker';
-        pageIcon = Icons.school;
-        Navigator.push(context, MaterialPageRoute(builder: (context) => StudentTrackerPage()));
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => StudentTrackerPage()),
+        );
         break;
       case 'travel:plan':
-        pageName = 'Travel Guide';
-        pageIcon = Icons.flight;
-        Navigator.push(context, MaterialPageRoute(builder: (context) => TravelGuidePage()));
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => TravelGuidePage()),
+        );
         break;
       case 'notes:create':
-        pageName = 'Memo Keeper';
-        pageIcon = Icons.note;
-        Navigator.push(context, MaterialPageRoute(builder: (context) => MemoKeeperPage()));
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => MemoKeeperPage()),
+        );
         break;
       case 'alarm:set':
-        pageName = 'Alarm Scheduler';
-        pageIcon = Icons.alarm;
-        Navigator.push(context, MaterialPageRoute(builder: (context) => AlarmSchedulerPage()));
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => AlarmSchedulerPage()),
+        );
         break;
       case 'clear:all':
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Data cleared via voice')));
-        return; // Don't track this
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Data cleared via voice')));
+        break;
       default:
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Intent: $intent')));
-        return; // Don't track unknown intents
-    }
-    
-    // NEW: Add to activity log
-    if (pageName.isNotEmpty) {
-      setState(() {
-        _recentActivity.insert(0, {
-          'type': 'navigation',
-          'content': 'Opened $pageName',
-          'time': DateTime.now(),
-          'icon': pageIcon,
-        });
-        if (_recentActivity.length > 7) _recentActivity.removeLast();
-      });
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Intent: $intent')));
     }
   }
 
-  // Added helper method for card taps
-  void _handleCardTap(String title, IconData icon, VoidCallback onTap) {
-    HapticFeedback.lightImpact();
-    setState(() {
-      _recentActivity.insert(0, {
-        'type': 'navigation',
-        'content': 'Opened $title',
-        'time': DateTime.now(),
-        'icon': icon,
-      });
-      if (_recentActivity.length > 7) _recentActivity.removeLast();
-    });
-    onTap(); // Execute the navigation
+  void _showMysteryDialog() {
+    String input = '';
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter Code'),
+        content: TextField(
+          decoration: const InputDecoration(labelText: 'Code'),
+          onChanged: (value) => input = value,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (input.toLowerCase() == 'tester') {
+                setState(() {
+                  _showTestButtons = true;
+                });
+              }
+              Navigator.pop(context);
+            },
+            child: const Text('Submit'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Consumer<ImageState>(
       builder: (context, imageState, child) {
-        return Stack(
-          children: [
-            Scaffold(
-              // --- APPBAR UPDATED ---
-              appBar: AppBar(
-                backgroundColor: Colors.transparent,
-                elevation: 0,
-                // NEW: Animated bot icon in AppBar
-                leading: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 300),
-                  opacity: _isPanelExpanded ? 1.0 : 0.0,
-                  child: Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Icon(
-                      Icons.smart_toy,
-                      size: 36,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                ),
-                title: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('STARBOY',
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineMedium
-                            ?.copyWith(fontWeight: FontWeight.w800)),
-                    Text(
-                      'AI Personal Assistant',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
-                    ),
-                  ],
-                ),
-                actions: [
-                  IconButton(
-                    tooltip: 'Show voice commands',
-                    onPressed: _showHelpTutorial,
-                    icon: const Icon(Icons.help_outline),
-                  ),
-                  IconButton(
-                    tooltip: 'Check backend health',
-                    onPressed: () async {
-                      try {
-                        final status = await _speechService.initializeOnDemand();
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(status == 'ready' ? 'Backend OK' : status)),
-                        );
-                      } catch (e) {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Health check failed: $e')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.health_and_safety_outlined),
-                  ),
-                ],
-              ),
-              // --- BODY UPDATED ---
-              body: Container(
-                width: double.infinity,
-                height: double.infinity,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Theme.of(context).colorScheme.primary.withOpacity(0.08),
-                      Theme.of(context).colorScheme.secondary.withOpacity(0.05),
-                    ],
-                  ),
-                ),
-                // NEW: Stack for bot and sliding panel
-                child: Stack(
-                  children: [
-                    // --- LAYER 1: The Maximized Bot ---
-                    _buildMaximizedBot(),
-
-                    // --- LAYER 2: The Sliding Panel ---
-                    _buildSlidingPanel(),
+        return Scaffold(
+          body: SafeArea(
+            child: Container(
+              width: double.infinity,
+              height: double.infinity,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF4A90E2), // Soft blue
+                    Color(0xFF50E3C2), // Teal
                   ],
                 ),
               ),
-              // --- BOTTOMNAVBAR UPDATED ---
-              bottomNavigationBar: _buildBottomMicBar(),
-            ), 
-            
-            // Tutorial Overlay (remains the same)
-            if (_showTutorial)
-              Container(
-                color: Colors.black.withOpacity(0.8),
-                child: Center(
-                  child: Card(
-                    margin: const EdgeInsets.all(32),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'STARBOY',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .displayMedium
+                                  ?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.white),
+                            ),
+                            Text(
+                              'AI Personal Assistant',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    color: Colors.white70,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.question_mark,
+                              color: Colors.white),
+                          onPressed: _showMysteryDialog,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_showTestButtons)
+                    Container(
+                      height: 60,
+                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
                         children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'Voice Commands',
-                                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                  fontWeight: FontWeight.bold,
+                          _buildTestButton('Alarm', 'navigate:alarm',
+                              Colors.redAccent),
+                          const SizedBox(width: 8),
+                          _buildTestButton('Memo', 'navigate:memo',
+                              Colors.orangeAccent),
+                          const SizedBox(width: 8),
+                          _buildTestButton('Student', 'navigate:student',
+                              Colors.greenAccent),
+                          const SizedBox(width: 8),
+                          _buildTestButton('Travel', 'navigate:travel',
+                              Colors.blueAccent),
+                          const SizedBox(width: 8),
+                          _buildTestButton('Email', 'navigate:email',
+                              Colors.purpleAccent),
+                        ],
+                      ),
+                    ),
+                  Expanded(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          AnimatedBuilder(
+                            animation: Listenable.merge([
+                              _pulseAnimation,
+                              _shakeAnimation,
+                            ]),
+                            builder: (context, _) {
+                              return Transform.scale(
+                                scale: _pulseAnimation.value,
+                                child: ClipOval(
+                                  child: Image.asset(
+                                    'assets/Starboy/Neutral_bot.png',
+                                    width: 160,
+                                    height: 160,
+                                    fit: BoxFit.cover,
+                                    errorBuilder:
+                                        (context, error, stackTrace) {
+                                      print('Error loading image: $error');
+                                      return Center(
+                                          child: Text('Image not found: $error',
+                                              style: TextStyle(
+                                                  color: Colors.white)));
+                                    },
+                                  ),
                                 ),
-                              ),
-                              IconButton(
-                                onPressed: _closeTutorial,
-                                icon: const Icon(Icons.close),
-                              ),
-                            ],
+                              );
+                            },
                           ),
                           const SizedBox(height: 16),
-                          _buildCommandExample('Navigation', [
-                            'Open student tracker',
-                            'Show my alarms',
-                            'Take me to travel page',
-                          ]),
-                          const SizedBox(height: 12),
-                          _buildCommandExample('Actions', [
-                            'Set alarm for 7 AM',
-                            'Check my scores',
-                            'Create a new memo',
-                          ]),
-                          const SizedBox(height: 12),
-                          _buildCommandExample('General', [
-                            'What\'s in this image?',
-                            'Tell me a joke',
-                            'How are you today?',
-                          ]),
-                          const SizedBox(height: 16),
-                          Container(
-                            padding: const EdgeInsets.all(12),
+                          if (_isLoading)
+                            const CircularProgressIndicator(
+                                valueColor:
+                                    AlwaysStoppedAnimation<Color>(
+                                        Colors.white))
+                          else
+                            Padding(
+                              padding: const EdgeInsets.all(16.0),
+                              child: Text(
+                                _responseText,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.white,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                    child: Column(
+                      children: [
+                        GestureDetector(
+                          onLongPressStart: (_) => _onHoldMicStart(),
+                          onLongPressEnd: (_) => _onHoldMicEnd(),
+                          onTap: () => _testVoiceCommand(),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            margin: const EdgeInsets.only(bottom: 12),
                             decoration: BoxDecoration(
-                              color: Colors.blue.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
+                              gradient: LinearGradient(
+                                colors: [Colors.blueAccent, Colors.cyan],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(16),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.blueAccent.withOpacity(0.3),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 6),
+                                ),
+                              ],
                             ),
                             child: Row(
-                              children: const [
-                                Icon(Icons.info_outline, size: 18, color: Colors.blue),
-                                SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'Hold the microphone button and speak clearly',
-                                    style: TextStyle(fontSize: 12, color: Colors.blue),
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.mic, color: Colors.white),
+                                const SizedBox(width: 8),
+                                Text(
+                                  _isSpeaking ? 'Recording…' : 'Hold to Record',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                        ElevatedButton(
+                          onPressed: _sendRecordingOrImage,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.teal,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            elevation: 8,
+                          ),
+                          child: Container(
+                            width: double.infinity,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.send),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Send',
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        InkWell(
+                          onTap: _takePicture,
+                          borderRadius: BorderRadius.circular(16),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [Colors.purpleAccent, Colors.deepPurple],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.camera_alt,
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Take Picture',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
+                ],
               ),
-          ],
-      );
-    },
-  );
-}
-
-  // --- NEW WIDGETS ---
-
-  Widget _buildMaximizedBot() {
-    return AnimatedOpacity(
-      duration: const Duration(milliseconds: 200),
-      opacity: _isPanelExpanded ? 0.0 : 1.0, // Fade out when panel expands
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AnimatedBuilder(
-              animation: Listenable.merge([_pulseAnimation, _shakeAnimation]),
-              builder: (context, _) {
-                return Transform.scale(
-                  scale: _pulseAnimation.value,
-                  child: Icon(
-                    _isSpeaking ? Icons.mic : Icons.smart_toy,
-                    size: 120,
-                    color: Theme.of(context).colorScheme.primary.withOpacity(0.8),
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 12),
-            if (_isLoading)
-              const CircularProgressIndicator()
-            // --- Replaced Text with Typewriter Effect ---
-            else if (_responseText.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                child: AnimatedTextKit(
-                  key: ValueKey(_responseText), // Ensures it reruns on new text
-                  animatedTexts: [
-                    TypewriterAnimatedText(
-                      _responseText,
-                      textAlign: TextAlign.center,
-                      textStyle: const TextStyle(fontSize: 14, color: Colors.black87),
-                      speed: const Duration(milliseconds: 50),
-                    ),
-                  ],
-                  totalRepeatCount: 1,
-                  isRepeatingAnimation: false,
-                ),
-              ),
-            // --- End of replacement ---
-            const SizedBox(height: 100), // Space for bottom bar
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSlidingPanel() {
-    return DraggableScrollableSheet(
-      controller: _scrollController,
-      initialChildSize: 0.15, // Start minimized
-      minChildSize: 0.15,
-      maxChildSize: 0.85, // Max height
-      builder: (context, scrollController) {
-        return Container(
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 10,
-                color: Colors.black.withOpacity(0.1),
-              ),
-            ],
-          ),
-          child: SingleChildScrollView(
-            controller: scrollController,
-            child: Column(
-              children: [
-                _buildPanelHandle(),
-                // This is the content that was in the old SingleChildScrollView
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    children: [
-                      _buildQuickActionCards(),
-                      const SizedBox(height: 16),
-                      _buildRecentActivity(),
-                      const SizedBox(height: 24), // Add padding at bottom
-                    ],
-                  ),
-                ),
-              ],
             ),
           ),
         );
@@ -707,447 +898,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildPanelHandle() {
-    return InkWell(
-      onTap: () {
-        if (_isPanelExpanded) {
-          _scrollController.animateTo(
-            0.15,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        } else {
-          _scrollController.animateTo(
-            0.85,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        }
-      },
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 8.0),
-        child: Column(
-          children: [
-            Container( // The "grip"
-              width: 40,
-              height: 5,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            Icon(
-              _isPanelExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
-              color: Colors.grey.shade600,
-            ),
-          ],
-        ),
+  Widget _buildTestButton(String label, String intent, Color color) {
+    return ElevatedButton(
+      onPressed: () => _routeByIntent(intent),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
+      child: Text(label, style: const TextStyle(color: Colors.white)),
     );
   }
 
-  Widget _buildBottomMicBar() {
-    // This is the Padding(...) widget cut from the bottom of the old Column
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-      child: Row(
-        children: [
-          Expanded(
-            child: GestureDetector(
-              onLongPressStart: (_) => _onHoldMicStart(),
-              onLongPressEnd: (_) => _onHoldMicEnd(),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
-                      blurRadius: 10,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.mic, color: Colors.white),
-                    const SizedBox(width: 8),
-                    Text(_isSpeaking ? 'Listening…' : 'Hold to Talk',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: InkWell(
-              onTap: _onPickMedia,
-              borderRadius: BorderRadius.circular(16),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.secondaryContainer,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.add_photo_alternate,
-                        color: Theme.of(context).colorScheme.onSecondaryContainer),
-                    const SizedBox(width: 8),
-                    const Text('Add Media', style: TextStyle(fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-  // --- END NEW WIDGETS ---
-
-
-  Widget _buildQuickActionCards() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-          child: Text(
-            'Quick Actions',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        // --- Added Entry Animations ---
-        AnimationLimiter(
-          child: GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            childAspectRatio: 1.4,
-            children: AnimationConfiguration.toStaggeredList(
-              duration: const Duration(milliseconds: 375),
-              childAnimationBuilder: (widget) => SlideAnimation(
-                verticalOffset: 50.0,
-                child: FadeInAnimation(
-                  child: widget,
-                ),
-              ),
-              children: [
-                _buildSplitTrackerCard(), // Replaced single card with split card
-                _buildActionCard(
-                  'Alarms',
-                  Icons.alarm,
-                  Colors.orange,
-                  () => Navigator.push(context, MaterialPageRoute(builder: (context) => AlarmSchedulerPage())),
-                ),
-                _buildActionCard(
-                  'Memos',
-                  Icons.note,
-                  Colors.green,
-                  () => Navigator.push(context, MaterialPageRoute(builder: (context) => MemoKeeperPage())),
-                ),
-                _buildActionCard(
-                  'Travel Guide',
-                  Icons.flight,
-                  Colors.purple,
-                  () => Navigator.push(context, MaterialPageRoute(builder: (context) => TravelGuidePage())),
-                ),
-              ],
-            ),
-          ),
-        ),
-        // --- End of animation ---
-      ],
-    );
-  }
-
-  Widget _buildActionCard(String title, IconData icon, Color color, VoidCallback onTap) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: InkWell(
-        onTap: () => _handleCardTap(title, icon, onTap), // Updated to use helper
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                color.withOpacity(0.1),
-                color.withOpacity(0.05),
-              ],
-            ),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 36, color: color),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: color.withOpacity(0.9),
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      ));
-  }
-
-  // Added new widget for the split card
-  Widget _buildSplitTrackerCard() {
-    const Color cardColor = Colors.blue;
-
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      clipBehavior: Clip.antiAlias, // Ensures InkWell ripples are clipped
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              cardColor.withOpacity(0.1),
-              cardColor.withOpacity(0.05),
-            ],
-          ),
-        ),
-        child: Row(
-          children: [
-            // Box 1: Student Tracker
-            Expanded(
-              child: InkWell(
-                onTap: () => _handleCardTap(
-                  'Student Tracker',
-                  Icons.school,
-                  () => Navigator.push(context, MaterialPageRoute(builder: (context) => StudentTrackerPage())),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.school, size: 36, color: cardColor),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Student Tracker',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: cardColor.withOpacity(0.9),
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            
-            // Divider
-            VerticalDivider(width: 1, thickness: 1, color: Colors.black.withOpacity(0.05)),
-
-            // Box 2: Classroom
-            Expanded(
-              child: InkWell(
-                onTap: () => _handleCardTap(
-                  'Classroom',
-                  Icons.class_outlined,
-                  () => Navigator.push(context, MaterialPageRoute(builder: (context) => ClassroomPage())),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.class_outlined, size: 36, color: cardColor),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Classroom',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: cardColor.withOpacity(0.9),
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // --- Updated with Empty State ---
-  Widget _buildRecentActivity() {
-    if (_recentActivity.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 48.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.history_toggle_off, size: 48, color: Colors.grey.shade400),
-              const SizedBox(height: 12),
-              Text(
-                'Your activity will appear here',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-    
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Recent Activity',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    _recentActivity.clear();
-                  });
-                },
-                child: const Text('Clear', style: TextStyle(fontSize: 12)),
-              ),
-            ],
-          ),
-        ),
-        Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: AnimationLimiter( // Added animation
-            child: ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _recentActivity.length,
-              separatorBuilder: (context, index) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final activity = _recentActivity[index];
-                final time = activity['time'] as DateTime;
-                final now = DateTime.now();
-                final diff = now.difference(time);
-                String timeAgo;
-                if (diff.inMinutes < 1) {
-                  timeAgo = 'Just now';
-                } else if (diff.inMinutes < 60) {
-                  timeAgo = '${diff.inMinutes}m ago';
-                } else {
-                  timeAgo = '${diff.inHours}h ago';
-                }
-
-                return AnimationConfiguration.staggeredList( // Added animation
-                  position: index,
-                  duration: const Duration(milliseconds: 375),
-                  child: SlideAnimation(
-                    verticalOffset: 50.0,
-                    child: FadeInAnimation(
-                      child: ListTile(
-                        dense: true,
-                        leading: CircleAvatar(
-                          radius: 18,
-                          backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                          child: Icon(
-                            activity['icon'] as IconData,
-                            size: 18,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                        ),
-                        title: Text(
-                          activity['content'] as String,
-                          style: const TextStyle(fontSize: 13),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: Text(
-                          timeAgo,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-      ],
-    );
-  }
-  // --- End of update ---
-
-  Widget _buildCommandExample(String category, List<String> examples) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          category,
-          style: const TextStyle(
-            fontWeight: FontWeight.w600,
-            fontSize: 14,
-          ),
-        ),
-        const SizedBox(height: 6),
-        ...examples.map((cmd) => Padding(
-          padding: const EdgeInsets.only(left: 8, bottom: 4),
-          child: Row(
-            children: [
-              const Icon(Icons.mic, size: 14, color: Colors.grey),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '"$cmd"',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey.shade700,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        )).toList(),
-      ],
-    );
+  void _testVoiceCommand() {
+    setState(() {
+      _responseText = 'Test voice command triggered';
+    });
+    HapticFeedback.selectionClick();
   }
 }

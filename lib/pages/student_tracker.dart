@@ -1,56 +1,66 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../services/config_service.dart';
 
 class StudentTrackerPage extends StatefulWidget {
   @override
   _StudentTrackerPageState createState() => _StudentTrackerPageState();
 }
 
-class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProviderStateMixin {
+class _StudentTrackerPageState extends State<StudentTrackerPage>
+    with TickerProviderStateMixin {
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
 
-  String _currentGlb = 'assets/glb/c_neutral.glb';
-  bool _reloadModel = false;
+  bool _isLoading = false;
+  String _errorMessage = '';
 
-  // Mock data - replace with real API calls
-  List<SubjectScore> _scores = [
-    SubjectScore(subject: 'Mathematics', score: 85, maxScore: 100, trend: ScoreTrend.up),
-    SubjectScore(subject: 'Physics', score: 78, maxScore: 100, trend: ScoreTrend.down),
-    SubjectScore(subject: 'Chemistry', score: 92, maxScore: 100, trend: ScoreTrend.up),
-    SubjectScore(subject: 'Biology', score: 88, maxScore: 100, trend: ScoreTrend.stable),
-    SubjectScore(subject: 'English', score: 90, maxScore: 100, trend: ScoreTrend.up),
-  ];
+  List<SubjectScore> _scores = [];
+  String _mssv = '';
+  String _password = '';
 
-  // Mock achievement data
-  final List<Map<String, dynamic>> _achievements = [
-    {'label': 'Top Scorer', 'icon': Icons.star, 'color': Colors.amber},
-    {'label': 'Most Improved', 'icon': Icons.trending_up, 'color': Colors.green},
-    {'label': 'Perfect Week', 'icon': Icons.check_circle, 'color': Colors.blue},
-    {'label': 'Science Whiz', 'icon': Icons.science, 'color': Colors.purple},
-    {'label': 'Book Worm', 'icon': Icons.menu_book, 'color': Colors.brown},
-  ];
+  double get _overallAverage {
+    double totalScore = 0.0;
+    int totalCredits = 0;
+    for (var score in _scores) {
+      if (score.score != null) {
+        totalScore += score.score! * (score.credits ?? 0);
+        totalCredits += score.credits ?? 0;
+      }
+    }
+    return totalCredits > 0 ? totalScore / totalCredits : 0.0;
+  }
 
-  double get _overallAverage => _scores.fold(0.0, (sum, score) => sum + score.score) / _scores.length;
   String get _grade => _getGrade(_overallAverage);
-  String get _gpa => _getGpaFromGrade(_grade); // NEW: GPA Getter
 
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(duration: Duration(milliseconds: 2000), vsync: this)
-      ..repeat(reverse: true);
+    _pulseController = AnimationController(
+      duration: Duration(milliseconds: 2000),
+      vsync: this,
+    )..repeat(reverse: true);
     _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-    _bounceController = AnimationController(duration: Duration(milliseconds: 600), vsync: this);
+    _bounceController = AnimationController(
+      duration: Duration(milliseconds: 600),
+      vsync: this,
+    );
     _bounceAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _bounceController, curve: Curves.elasticOut),
     );
     _bounceController.forward();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_mssv.isNotEmpty) {
+        _loadExistingScores(_mssv);
+      }
+    });
   }
 
   @override
@@ -60,28 +70,116 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
     super.dispose();
   }
 
-  String _getGrade(double average) {
-    if (average >= 90) return 'A+';
-    if (average >= 80) return 'A';
-    if (average >= 70) return 'B';
-    if (average >= 60) return 'C';
-    return 'D';
+  Future<void> _fetchScores(String mssv, String password) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = '';
+    });
+
+    try {
+      final response = await http.post(
+        Uri.parse('${ConfigService.backendUrl}/check_scores'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'mssv': mssv, 'password': password}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data.containsKey('scores')) {
+          List<dynamic> scoresData = data['scores'];
+          setState(() {
+            _scores = scoresData.map((score) {
+              double? parsedScore = double.tryParse(score['score'].toString());
+              return SubjectScore(
+                code: score['code'] ?? '',
+                subject: score['course'] ?? 'Unknown',
+                credits: int.tryParse(score['credits'].toString()) ?? 0,
+                score: parsedScore,
+                maxScore: parsedScore != null ? 10.0 : null,
+                trend: ScoreTrend.stable,
+              );
+            }).toList();
+            _mssv = mssv;
+            _password = password;
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _errorMessage = 'No scores found';
+            _isLoading = false;
+          });
+        }
+      } else {
+        final errorData = jsonDecode(response.body);
+        setState(() {
+          _errorMessage = errorData['error'] ?? 'Failed to fetch scores';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error connecting to server: $e';
+        _isLoading = false;
+      });
+    }
   }
 
-  // NEW: GPA conversion function
-  String _getGpaFromGrade(String grade) {
-    switch (grade) {
-      case 'A+':
-        return '4.0';
-      case 'A':
-        return '3.7';
-      case 'B':
-        return '3.0';
-      case 'C':
-        return '2.0';
-      default:
-        return '1.0';
+  Future<void> _loadExistingScores(String mssv) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = '';
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse('${ConfigService.backendUrl}/scores/$mssv'),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data.containsKey('scores') && data['scores'].isNotEmpty) {
+          List<dynamic> scoresData = data['scores'];
+          setState(() {
+            _scores = scoresData.map((score) {
+              double? parsedScore = double.tryParse(score['score'].toString());
+              return SubjectScore(
+                code: score['code'] ?? '',
+                subject: score['course'] ?? 'Unknown',
+                credits: int.tryParse(score['credits'].toString()) ?? 0,
+                score: parsedScore,
+                maxScore: parsedScore != null ? 10.0 : null,
+                trend: ScoreTrend.stable,
+              );
+            }).toList();
+            _mssv = mssv;
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _errorMessage = 'No existing scores found for MSSV $mssv';
+            _isLoading = false;
+          });
+        }
+      } else {
+        setState(() {
+          _errorMessage = 'Failed to load existing scores';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error loading scores: $e';
+        _isLoading = false;
+      });
     }
+  }
+
+  String _getGrade(double average) {
+    if (average >= 8.5) return 'A+';
+    if (average >= 8.0) return 'A';
+    if (average >= 7.0) return 'B';
+    if (average >= 6.0) return 'C';
+    return 'D';
   }
 
   Color _getGradeColor(String grade) {
@@ -98,69 +196,6 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
     }
   }
 
-  // NEW: Function to show subject details modal
-  void _showSubjectDetails(SubjectScore score) {
-    HapticFeedback.lightImpact();
-    showModalBottomSheet(
-      context: context,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return Container(
-          padding: EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                score.subject,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              SizedBox(height: 16),
-              ListTile(
-                leading: Icon(Icons.check_circle_outline, color: _getScoreColor(score.score)),
-                title: Text('Current Score'),
-                trailing: Text(
-                  '${score.score}/${score.maxScore}',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: _getScoreColor(score.score),
-                  ),
-                ),
-              ),
-              ListTile(
-                leading: Icon(_getTrendIcon(score.trend), color: _getTrendColor(score.trend)),
-                title: Text('Score Trend'),
-                trailing: Text(
-                  score.trend.toString().split('.').last, // 'up', 'down', 'stable'
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Divider(height: 24),
-              Text(
-                'Mock Score Breakdown',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              SizedBox(height: 8),
-              ListTile(dense: true, title: Text('Assignment 1:'), trailing: Text('88/100')),
-              ListTile(dense: true, title: Text('Quiz 1:'), trailing: Text('75/100')),
-              ListTile(dense: true, title: Text('Midterm Exam:'), trailing: Text('92/100')),
-              SizedBox(height: 20),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -176,43 +211,206 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
         actions: [
           IconButton(
             icon: Icon(Icons.refresh),
-            onPressed: () {
-              HapticFeedback.lightImpact();
-              _bounceController.reset();
-              _bounceController.forward();
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Scores refreshed!')),
-              );
-            },
+            onPressed: _isLoading
+                ? null
+                : () {
+                    HapticFeedback.lightImpact();
+                    _bounceController.reset();
+                    _bounceController.forward();
+                    if (_mssv.isNotEmpty) {
+                      _loadExistingScores(_mssv);
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Please enter MSSV first')),
+                      );
+                    }
+                  },
           ),
         ],
       ),
       body: Stack(
         children: [
-          // Main content
           SingleChildScrollView(
             padding: EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildOverallStatsCard(),
+                _buildInputSection(),
                 SizedBox(height: 20),
-                _buildAchievementBadges(), // NEW: Achievement badges
-                SizedBox(height: 20),
-                _buildSubjectScoresList(),
-                SizedBox(height: 20),
-                _buildPerformanceChart(),
-                SizedBox(height: 100), // Space for floating avatar
+                if (_isLoading)
+                  _buildLoadingCard()
+                else if (_errorMessage.isNotEmpty)
+                  _buildErrorCard()
+                else if (_scores.isNotEmpty) ...[
+                  _buildOverallStatsCard(),
+                  SizedBox(height: 20),
+                  _buildSubjectScoresList(),
+                  SizedBox(height: 20),
+                  _buildPerformanceChart(),
+                ] else
+                  _buildEmptyStateCard(),
+                SizedBox(height: 100),
               ],
             ),
           ),
-          // Floating STARBOY avatar
-          Positioned(
-            bottom: 20,
-            right: 20,
-            child: _buildFloatingAvatar(),
-          ),
+          Positioned(bottom: 20, right: 20, child: _buildFloatingAvatar()),
         ],
+      ),
+    );
+  }
+
+  Widget _buildInputSection() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Enter Student Credentials',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 16),
+            TextField(
+              decoration: InputDecoration(
+                labelText: 'MSSV',
+                hintText: 'Enter your student ID (e.g., A12345)',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                prefixIcon: Icon(Icons.school),
+              ),
+              onChanged: (value) => _mssv = value,
+              keyboardType: TextInputType.text, // Changed to text for alphanumeric input
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9]')), // Allow letters and numbers
+              ],
+            ),
+            SizedBox(height: 12),
+            TextField(
+              decoration: InputDecoration(
+                labelText: 'Password',
+                hintText: 'Enter your password',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                prefixIcon: Icon(Icons.lock),
+              ),
+              onChanged: (value) => _password = value,
+              obscureText: true,
+            ),
+            SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _isLoading
+                    ? null
+                    : () {
+                        if (_mssv.isNotEmpty && _password.isNotEmpty) {
+                          _fetchScores(_mssv, _password);
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Please enter both MSSV and password')),
+                          );
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  padding: EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: _isLoading
+                    ? SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text('Fetch Scores'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(40),
+        child: Column(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text(
+              'Fetching scores...',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Icon(Icons.error_outline, color: Colors.red, size: 48),
+            SizedBox(height: 16),
+            Text(
+              'Error',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              _errorMessage,
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  _errorMessage = '';
+                });
+              },
+              child: Text('Try Again'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyStateCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(40),
+        child: Column(
+          children: [
+            Icon(Icons.school_outlined, color: Colors.grey, size: 64),
+            SizedBox(height: 16),
+            Text(
+              'No Scores Yet',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Enter MSSV and password to fetch your scores',
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -249,16 +447,14 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
                         children: [
                           Text(
                             'Overall Performance',
-                            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                            style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
                           ),
                           SizedBox(height: 8),
                           Text(
-                            '${_scores.length} subjects tracked',
+                            '${_scores.where((s) => s.score != null).length} subjects with scores',
                             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                            ),
+                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                                ),
                           ),
                         ],
                       ),
@@ -279,16 +475,14 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
                       ),
                     ],
                   ),
-                  SizedBox(height: 16),
-                  _buildWeeklyTrend(), // NEW: Weekly trend card
                   SizedBox(height: 20),
                   Row(
                     children: [
                       Expanded(
                         child: _buildStatItem(
-                          'GPA', // UPDATED: Was 'Average'
-                          _gpa,  // UPDATED: Was _overallAverage
-                          Icons.school, // UPDATED: Was trending_up
+                          'Weighted Average',
+                          _overallAverage.isNaN ? 'N/A' : '${_overallAverage.toStringAsFixed(1)}/10.0',
+                          Icons.trending_up,
                           Colors.blue,
                         ),
                       ),
@@ -296,7 +490,9 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
                       Expanded(
                         child: _buildStatItem(
                           'Best Subject',
-                          _scores.reduce((a, b) => a.score > b.score ? a : b).subject,
+                          _scores.where((s) => s.score != null).isEmpty
+                              ? 'N/A'
+                              : _scores.where((s) => s.score != null).reduce((a, b) => a.score! > b.score! ? a : b).subject,
                           Icons.star,
                           Colors.amber,
                         ),
@@ -309,32 +505,6 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
           ),
         );
       },
-    );
-  }
-
-  // NEW: Weekly trend widget
-  Widget _buildWeeklyTrend() {
-    return Container(
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.green.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.green.withOpacity(0.3)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.trending_up, color: Colors.green, size: 20),
-          SizedBox(width: 8),
-          Text(
-            'Weekly Trend: +3.5%', // Mock data
-            style: TextStyle(
-              color: Colors.green.shade800,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -353,77 +523,18 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
           Text(
             value,
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
             textAlign: TextAlign.center,
           ),
           SizedBox(height: 4),
           Text(
             label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-            ),
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                ),
             textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-
-  // NEW: Achievement badges widget
-  Widget _buildAchievementBadges() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Achievements',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        SizedBox(height: 12),
-        Container(
-          height: 100,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: _achievements.length,
-            separatorBuilder: (context, index) => SizedBox(width: 12),
-            itemBuilder: (context, index) {
-              final badge = _achievements[index];
-              return _buildBadge(badge['label'], badge['icon'], badge['color']);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  // NEW: Helper for a single badge
-  Widget _buildBadge(String label, IconData icon, Color color) {
-    return Container(
-      width: 90,
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: color, size: 32),
-          SizedBox(height: 8),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: Color.lerp(color, Colors.black, 0.6),
-            ),
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -436,9 +547,7 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
       children: [
         Text(
           'Subject Scores',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
         ),
         SizedBox(height: 12),
         ..._scores.map((score) => _buildSubjectCard(score)).toList(),
@@ -451,124 +560,125 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
       margin: EdgeInsets.only(bottom: 12),
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell( // UPDATED: Wrapped in InkWell
-        onTap: () => _showSubjectDetails(score), // UPDATED: Added onTap
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  color: _getScoreColor(score.score).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(25),
-                ),
-                child: Icon(
-                  _getSubjectIcon(score.subject),
-                  color: _getScoreColor(score.score),
-                  size: 24,
-                ),
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: score.score != null ? _getScoreColor(score.score!).withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(25),
               ),
-              SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      score.subject,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
+              child: Icon(
+                _getSubjectIcon(score.subject),
+                color: score.score != null ? _getScoreColor(score.score!) : Colors.grey,
+                size: 24,
+              ),
+            ),
+            SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    score.subject,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Code: ${score.code}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                  ),
+                  SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Text(
+                        score.score != null ? '${score.score}/10.0' : score.scoreText ?? 'M',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: score.score != null ? _getScoreColor(score.score!) : Colors.grey,
+                            ),
                       ),
-                    ),
-                    SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Text(
-                          '${score.score}/${score.maxScore}',
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: _getScoreColor(score.score),
-                          ),
-                        ),
-                        SizedBox(width: 8),
-                        _buildTrendIcon(score.trend),
-                      ],
-                    ),
-                  ],
-                ),
+                      SizedBox(width: 8),
+                      if (score.score != null) _buildTrendIcon(score.trend),
+                    ],
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Credits: ${score.credits}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                  ),
+                ],
               ),
+            ),
+            if (score.score != null)
               Container(
                 width: 60,
                 height: 60,
                 child: CircularProgressIndicator(
-                  value: score.score / score.maxScore,
+                  value: score.score! / score.maxScore!,
                   backgroundColor: Colors.grey.shade300,
-                  valueColor: AlwaysStoppedAnimation<Color>(_getScoreColor(score.score)),
+                  valueColor: AlwaysStoppedAnimation<Color>(_getScoreColor(score.score!)),
                   strokeWidth: 6,
                 ),
               ),
-            ],
-          ),
+          ],
         ),
       ),
     );
   }
 
   Widget _buildTrendIcon(ScoreTrend trend) {
-    return Icon(_getTrendIcon(trend), color: _getTrendColor(trend), size: 20);
-  }
-  
-  // NEW: Helper to get trend icon
-  IconData _getTrendIcon(ScoreTrend trend) {
+    IconData icon;
+    Color color;
+
     switch (trend) {
       case ScoreTrend.up:
-        return Icons.trending_up;
+        icon = Icons.trending_up;
+        color = Colors.green;
+        break;
       case ScoreTrend.down:
-        return Icons.trending_down;
+        icon = Icons.trending_down;
+        color = Colors.red;
+        break;
       case ScoreTrend.stable:
-        return Icons.trending_flat;
+        icon = Icons.trending_flat;
+        color = Colors.blue;
+        break;
     }
+
+    return Icon(icon, color: color, size: 20);
   }
 
-  // NEW: Helper to get trend color
-  Color _getTrendColor(ScoreTrend trend) {
-    switch (trend) {
-      case ScoreTrend.up:
-        return Colors.green;
-      case ScoreTrend.down:
-        return Colors.red;
-      case ScoreTrend.stable:
-        return Colors.blue;
-    }
-  }
-
-  Color _getScoreColor(int score) {
-    if (score >= 90) return Colors.green;
-    if (score >= 80) return Colors.blue;
-    if (score >= 70) return Colors.orange;
+  Color _getScoreColor(double score) {
+    if (score >= 8.5) return Colors.green;
+    if (score >= 8.0) return Colors.blue;
+    if (score >= 7.0) return Colors.orange;
     return Colors.red;
   }
 
   IconData _getSubjectIcon(String subject) {
-    switch (subject.toLowerCase()) {
-      case 'mathematics':
-        return Icons.calculate;
-      case 'physics':
-        return Icons.science;
-      case 'chemistry':
-        return Icons.biotech;
-      case 'biology':
-        return Icons.eco;
-      case 'english':
-        return Icons.menu_book;
-      default:
-        return Icons.school;
+    String lowerSubject = subject.toLowerCase();
+    if (lowerSubject.contains('calculus') || lowerSubject.contains('algebra')) {
+      return Icons.calculate;
+    } else if (lowerSubject.contains('programming')) {
+      return Icons.code;
+    } else if (lowerSubject.contains('english')) {
+      return Icons.menu_book;
+    } else if (lowerSubject.contains('database')) {
+      return Icons.storage;
+    } else if (lowerSubject.contains('network')) {
+      return Icons.network_check;
     }
+    return Icons.school;
   }
 
   Widget _buildPerformanceChart() {
+    final validScores = _scores.where((s) => s.score != null).toList();
+    if (validScores.isEmpty) return SizedBox.shrink();
+
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -579,26 +689,18 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
           children: [
             Text(
               'Performance Overview',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
             SizedBox(height: 16),
-            Container(
-              height: 200,
-              child: _buildSimpleChart(),
-            ),
+            Container(height: 200, child: _buildSimpleChart(validScores)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildSimpleChart() {
-    return CustomPaint(
-      painter: ScoreChartPainter(_scores),
-      child: Container(),
-    );
+  Widget _buildSimpleChart(List<SubjectScore> validScores) {
+    return CustomPaint(painter: ScoreChartPainter(validScores), child: Container());
   }
 
   Widget _buildFloatingAvatar() {
@@ -621,31 +723,12 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
               ],
             ),
             child: ClipOval(
-              child: Visibility(
-                visible: !_reloadModel,
-                replacement: Container(
-                  color: Colors.grey.shade200,
-                  child: Center(child: CircularProgressIndicator()),
-                ),
-                child: ModelViewer(
-                  key: ValueKey('$_currentGlb$_reloadModel'),
-                  backgroundColor: Colors.transparent,
-                  src: _currentGlb,
-                  alt: 'STARBOY',
-                  ar: false,
-                  autoRotate: true,
-                  autoRotateDelay: 2000,
-                  rotationPerSecond: '20deg',
-                  cameraControls: false,
-                  disableZoom: true,
-                  touchAction: TouchAction.none,
-                  interactionPrompt: InteractionPrompt.none,
-                  cameraOrbit: '0deg 75deg 2m',
-                  minCameraOrbit: 'auto 50deg auto',
-                  maxCameraOrbit: 'auto 100deg auto',
-                  fieldOfView: '30deg',
-                  loading: Loading.eager,
-                ),
+              child: Image.asset(
+                'assets/Starboy/Neutral_bot.png', 
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Center(child: Text('Image not found'));
+                },
               ),
             ),
           ),
@@ -656,15 +739,21 @@ class _StudentTrackerPageState extends State<StudentTrackerPage> with TickerProv
 }
 
 class SubjectScore {
+  final String code;
   final String subject;
-  final int score;
-  final int maxScore;
+  final int? credits;
+  final double? score;
+  final double? maxScore;
+  final String? scoreText;
   final ScoreTrend trend;
 
   SubjectScore({
+    required this.code,
     required this.subject,
-    required this.score,
-    required this.maxScore,
+    required this.credits,
+    this.score,
+    this.maxScore,
+    this.scoreText,
     required this.trend,
   });
 }
@@ -685,61 +774,32 @@ class ScoreChartPainter extends CustomPainter {
       ..strokeWidth = 3;
 
     final path = Path();
-    final maxScore = scores.map((s) => s.score).reduce((a, b) => a > b ? a : b);
-    final minScore = scores.map((s) => s.score).reduce((a, b) => a < b ? a : b);
-    
-    // Handle division by zero if all scores are the same
-    final scoreRange = (maxScore - minScore) > 0 ? (maxScore - minScore) : maxScore;
+    final maxScore = 10.0; // Fixed max score for consistency
     final stepX = size.width / (scores.length - 1);
+    final stepY = size.height / maxScore;
 
     for (int i = 0; i < scores.length; i++) {
-      final x = (scores.length == 1) ? size.width / 2 : i * stepX;
-      
-      // Normalize Y position
-      double y;
-      if (scoreRange == 0) {
-        y = size.height / 2; // Center if all scores are same
-      } else {
-        y = size.height - ((scores[i].score - minScore) / scoreRange * size.height);
-      }
+      if (scores[i].score != null) {
+        final x = i * stepX;
+        final y = size.height - (scores[i].score! * stepY);
 
-      // Add padding to prevent clipping
-      y = y.clamp(size.height * 0.1, size.height * 0.9);
-      if (scoreRange == 0) y = size.height / 2; // Re-center
-      
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
       }
     }
 
     paint.color = Colors.blue;
     canvas.drawPath(path, paint);
 
-    // Draw points
     for (int i = 0; i < scores.length; i++) {
-      final x = (scores.length == 1) ? size.width / 2 : i * stepX;
-
-      double y;
-      if (scoreRange == 0) {
-        y = size.height / 2;
-      } else {
-        y = size.height - ((scores[i].score - minScore) / scoreRange * size.height);
+      if (scores[i].score != null) {
+        final x = i * stepX;
+        final y = size.height - (scores[i].score! * stepY);
+        canvas.drawCircle(Offset(x, y), 4, Paint()..color = Colors.blue);
       }
-      y = y.clamp(size.height * 0.1, size.height * 0.9);
-      if (scoreRange == 0) y = size.height / 2;
-      
-      canvas.drawCircle(
-        Offset(x, y),
-        4,
-        Paint()..color = Colors.white,
-      );
-       canvas.drawCircle(
-        Offset(x, y),
-        3,
-        Paint()..color = Colors.blue,
-      );
     }
   }
 

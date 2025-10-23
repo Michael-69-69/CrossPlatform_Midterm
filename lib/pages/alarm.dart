@@ -1,67 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../services/config_service.dart';
 
 class AlarmSchedulerPage extends StatefulWidget {
   @override
   _AlarmSchedulerPageState createState() => _AlarmSchedulerPageState();
 }
 
-class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProviderStateMixin {
+class _AlarmSchedulerPageState extends State<AlarmSchedulerPage>
+    with TickerProviderStateMixin {
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
   String _currentGlb = 'assets/glb/c_neutral.glb';
   bool _reloadModel = false;
+  bool _isLoading = false;
+  String _errorMessage = '';
 
-  // NEW: Constants for day selection and sounds
-  final List<String> _dayAbbreviations = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  final List<String> _soundOptions = ['Default Ringtone', 'Energetic Beep', 'Calm Bell', 'Focus Chime', 'None'];
-
-  // UPDATED: Mock alarm data to use TimeOfDay and Set<String>
-  List<Alarm> _alarms = [
-    Alarm(
-      id: 1,
-      title: 'Wake Up',
-      time: TimeOfDay(hour: 7, minute: 0),
-      days: {'Mon', 'Tue', 'Wed', 'Thu', 'Fri'},
-      isActive: true,
-      sound: 'Default Ringtone',
-    ),
-    Alarm(
-      id: 2,
-      title: 'Gym Time',
-      time: TimeOfDay(hour: 6, minute: 30),
-      days: {'Mon', 'Wed', 'Fri'},
-      isActive: true,
-      sound: 'Energetic Beep',
-    ),
-    Alarm(
-      id: 3,
-      title: 'Meditation',
-      time: TimeOfDay(hour: 20, minute: 0),
-      days: {'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'},
-      isActive: false,
-      sound: 'Calm Bell',
-    ),
-    Alarm(
-      id: 4,
-      title: 'Study Time',
-      time: TimeOfDay(hour: 14, minute: 0),
-      days: {'Tue', 'Thu', 'Sat'},
-      isActive: true,
-      sound: 'Focus Chime',
-    ),
-  ];
+  // Real alarm data from database
+  List<AlarmData> _alarms = [];
+  String _newAlarmTitle = '';
+  TimeOfDay _selectedTime = TimeOfDay.now();
+  String _userId = 'default_user'; // In a real app, this would come from user authentication
 
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(duration: Duration(milliseconds: 2000), vsync: this)
-      ..repeat(reverse: true);
+    _pulseController = AnimationController(
+      duration: Duration(milliseconds: 2000),
+      vsync: this,
+    )..repeat(reverse: true);
     _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+    // Load alarms when page opens
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadAlarms();
+    });
   }
 
   @override
@@ -70,212 +48,185 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
     super.dispose();
   }
 
-  void _toggleAlarm(int id) {
+  Future<void> _loadAlarms() async {
     setState(() {
-      final index = _alarms.indexWhere((a) => a.id == id);
-      final alarm = _alarms[index];
-      _alarms[index] = alarm.copyWith(isActive: !alarm.isActive);
+      _isLoading = true;
+      _errorMessage = '';
     });
+
+    try {
+      final response = await http.get(
+        Uri.parse('${ConfigService.backendUrl}/alarms/$_userId'),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final alarmsData = data['alarms'] as List<dynamic>;
+        setState(() {
+          _alarms = alarmsData.map((alarm) => AlarmData.fromJson(alarm)).toList();
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Error loading alarms: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error loading alarms: $e';
+        _isLoading = false;
+      });
+    }
   }
 
-  void _deleteAlarm(int id) {
-    setState(() {
-      _alarms.removeWhere((alarm) => alarm.id == id);
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Alarm deleted')),
-    );
-  }
-
-  // NEW: Add/Edit Alarm Function
-  void _showAddOrEditAlarmDialog({Alarm? existingAlarm}) async {
-    final _titleController = TextEditingController(text: existingAlarm?.title);
-    TimeOfDay _selectedTime = existingAlarm?.time ?? TimeOfDay.now();
-    Set<String> _selectedDays = Set.from(existingAlarm?.days ?? {});
-    String _selectedSound = existingAlarm?.sound ?? _soundOptions.first;
-    
-    // Use preset data if alarm is null but we are using a preset
-    if (existingAlarm != null && existingAlarm.id == -1) {
-      _titleController.text = existingAlarm.title;
-      _selectedTime = existingAlarm.time;
-      _selectedDays = existingAlarm.days;
-      _selectedSound = existingAlarm.sound;
+  Future<void> _createAlarm() async {
+    if (_newAlarmTitle.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Please enter alarm title')));
+      return;
     }
 
-    final result = await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true, // Important for keyboard
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (BuildContext context, StateSetter setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
-                top: 24,
-                left: 24,
-                right: 24,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      existingAlarm?.id == -1 || existingAlarm == null ? 'New Alarm' : 'Edit Alarm',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    SizedBox(height: 16),
-                    TextField(
-                      controller: _titleController,
-                      decoration: InputDecoration(
-                        labelText: 'Title',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                    SizedBox(height: 16),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Time', style: Theme.of(context).textTheme.titleMedium),
-                      trailing: TextButton(
-                        onPressed: () async {
-                          final newTime = await showTimePicker(
-                            context: context,
-                            initialTime: _selectedTime,
-                          );
-                          if (newTime != null) {
-                            setModalState(() {
-                              _selectedTime = newTime;
-                            });
-                          }
-                        },
-                        child: Text(
-                          _selectedTime.format(context),
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                        ),
-                      ),
-                    ),
-                    SizedBox(height: 16),
-                    Text('Repeat', style: Theme.of(context).textTheme.titleMedium),
-                    SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: _dayAbbreviations.map((day) {
-                        final isSelected = _selectedDays.contains(day);
-                        return FilterChip(
-                          label: Text(day),
-                          selected: isSelected,
-                          onSelected: (bool selected) {
-                            setModalState(() {
-                              if (selected) {
-                                _selectedDays.add(day);
-                              } else {
-                                _selectedDays.remove(day);
-                              }
-                            });
-                          },
-                          shape: CircleBorder(),
-                          padding: EdgeInsets.all(10),
-                          labelStyle: TextStyle(
-                            color: isSelected ? Colors.white : Colors.black87,
-                          ),
-                          backgroundColor: Colors.grey.shade200,
-                          selectedColor: Theme.of(context).colorScheme.primary,
-                        );
-                      }).toList(),
-                    ),
-                    SizedBox(height: 16),
-                    DropdownButtonFormField<String>(
-                      value: _selectedSound,
-                      decoration: InputDecoration(
-                        labelText: 'Sound',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      items: _soundOptions.map((sound) {
-                        return DropdownMenuItem(
-                          value: sound,
-                          child: Text(sound),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        if (value != null) {
-                          setModalState(() {
-                            _selectedSound = value;
-                          });
-                        }
-                      },
-                    ),
-                    SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => Navigator.pop(context, false), // Return false for cancel
-                            child: Text('Cancel'),
-                          ),
-                        ),
-                        SizedBox(width: 12),
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: () {
-                              final title = _titleController.text;
-                              if (title.isEmpty) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Title cannot be empty!')),
-                                );
-                                return;
-                              }
+    setState(() {
+      _isLoading = true;
+      _errorMessage = '';
+    });
 
-                              if (existingAlarm == null || existingAlarm.id == -1) {
-                                // Add new alarm
-                                final newAlarm = Alarm(
-                                  id: DateTime.now().millisecondsSinceEpoch,
-                                  title: title,
-                                  time: _selectedTime,
-                                  days: _selectedDays,
-                                  isActive: true,
-                                  sound: _selectedSound,
-                                );
-                                setState(() {
-                                  _alarms.insert(0, newAlarm);
-                                });
-                              } else {
-                                // Update existing alarm
-                                final updatedAlarm = existingAlarm.copyWith(
-                                  title: title,
-                                  time: _selectedTime,
-                                  days: _selectedDays,
-                                  sound: _selectedSound,
-                                );
-                                setState(() {
-                                  final index = _alarms.indexWhere((m) => m.id == existingAlarm.id);
-                                  if (index != -1) {
-                                    _alarms[index] = updatedAlarm;
-                                  }
-                                });
-                              }
-                              Navigator.pop(context, true); // Return true for save
-                            },
-                            child: Text('Save'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 24),
-                  ],
-                ),
-              ),
-            );
-          },
+    try {
+      DateTime now = DateTime.now();
+      DateTime alarmTime = DateTime(
+        now.year,
+        now.month,
+        now.day,
+        _selectedTime.hour,
+        _selectedTime.minute,
+      );
+
+      // If the time has passed today, set for tomorrow
+      if (alarmTime.isBefore(now)) {
+        alarmTime = alarmTime.add(Duration(days: 1));
+      }
+
+      final alarmData = AlarmData(
+        id: '', // Will be set by the server
+        title: _newAlarmTitle,
+        time: alarmTime,
+        isActive: true,
+      );
+
+      // Save to database
+      final response = await http.post(
+        Uri.parse('${ConfigService.backendUrl}/alarms'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_id': _userId,
+          'title': alarmData.title,
+          'alarm_time': alarmData.time.toIso8601String(),
+          'is_active': alarmData.isActive,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final savedAlarm = AlarmData.fromJson(data['alarm']);
+        setState(() {
+          _alarms.add(savedAlarm);
+          _isLoading = false;
+          _newAlarmTitle = '';
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Error creating alarm: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Alarm set for ${_selectedTime.format(context)}')),
+      );
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error creating alarm: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _deleteAlarm(String alarmId) async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final response = await http.delete(
+        Uri.parse('${ConfigService.backendUrl}/alarms/$alarmId'),
+      );
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _alarms.removeWhere((alarm) => alarm.id == alarmId);
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Alarm deleted')));
+      } else {
+        setState(() {
+          _errorMessage = 'Error deleting alarm: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error deleting alarm: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _toggleAlarm(String alarmId) async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final alarmIndex = _alarms.indexWhere((a) => a.id == alarmId);
+      if (alarmIndex != -1) {
+        final alarm = _alarms[alarmIndex];
+        final newActiveState = !alarm.isActive;
+
+        final response = await http.put(
+          Uri.parse('${ConfigService.backendUrl}/alarms/$alarmId'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'is_active': newActiveState}),
         );
-      },
-    );
+
+        if (response.statusCode == 200) {
+          final updatedAlarm = AlarmData(
+            id: alarm.id,
+            title: alarm.title,
+            time: alarm.time,
+            isActive: newActiveState,
+          );
+
+          setState(() {
+            _alarms[alarmIndex] = updatedAlarm;
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _errorMessage = 'Error updating alarm: ${response.statusCode}';
+            _isLoading = false;
+          });
+        }
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error toggling alarm: $e';
+        _isLoading = false;
+      });
+    }
   }
 
   @override
@@ -283,7 +234,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
-        title: Text('Alarm Scheduler'),
+        title: Text('AlarmScheduler'),
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
@@ -292,11 +243,12 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
         ),
         actions: [
           IconButton(
+            icon: Icon(Icons.refresh),
+            onPressed: _isLoading ? null : () => _loadAlarms(),
+          ),
+          IconButton(
             icon: Icon(Icons.add),
-            onPressed: () {
-              // UPDATED: Hook up add function
-              _showAddOrEditAlarmDialog();
-            },
+            onPressed: _isLoading ? null : () => _showAddAlarmDialog(),
           ),
         ],
       ),
@@ -309,25 +261,162 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
               children: [
                 _buildAlarmStatsCard(),
                 SizedBox(height: 24),
-                _buildQuickPresets(), // NEW: Quick Presets
-                SizedBox(height: 24),
-                _buildAlarmsSection(),
+                if (_isLoading)
+                  _buildLoadingCard()
+                else if (_errorMessage.isNotEmpty)
+                  _buildErrorCard()
+                else if (_alarms.isNotEmpty)
+                  _buildAlarmsSection()
+                else
+                  _buildEmptyStateCard(),
                 SizedBox(height: 100),
               ],
             ),
           ),
-          Positioned(
-            bottom: 20,
-            right: 20,
-            child: _buildFloatingAvatar(),
+          Positioned(bottom: 20, right: 20, child: _buildFloatingAvatar()),
+        ],
+      ),
+    );
+  }
+
+  void _showAddAlarmDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Set New Alarm'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              decoration: InputDecoration(
+                labelText: 'Alarm Title',
+                hintText: 'Enter alarm title...',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => _newAlarmTitle = value,
+            ),
+            SizedBox(height: 16),
+            ListTile(
+              title: Text('Time'),
+              subtitle: Text(_selectedTime.format(context)),
+              trailing: Icon(Icons.access_time),
+              onTap: () async {
+                final TimeOfDay? picked = await showTimePicker(
+                  context: context,
+                  initialTime: _selectedTime,
+                );
+                if (picked != null) {
+                  setState(() {
+                    _selectedTime = picked;
+                  });
+                }
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _createAlarm();
+            },
+            child: Text('Set Alarm'),
           ),
         ],
       ),
     );
   }
 
+  Widget _buildLoadingCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(40),
+        child: Column(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text(
+              'Loading alarms...',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Icon(Icons.error_outline, color: Colors.red, size: 48),
+            SizedBox(height: 16),
+            Text(
+              'Error',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                color: Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              _errorMessage,
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  _errorMessage = '';
+                });
+              },
+              child: Text('Try Again'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyStateCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: EdgeInsets.all(40),
+        child: Column(
+          children: [
+            Icon(Icons.alarm_outlined, color: Colors.grey, size: 64),
+            SizedBox(height: 16),
+            Text(
+              'No Alarms Set',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Tap the + button to set your first alarm',
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildAlarmStatsCard() {
-    final activeAlarms = _alarms.where((a) => a.isActive).length;
+    final activeAlarms = _alarms.length; // All alarms are active in the new system
 
     return Card(
       elevation: 8,
@@ -355,9 +444,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
                   children: [
                     Text(
                       'My Alarms',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
                     ),
                     SizedBox(height: 8),
                     Text(
@@ -421,7 +508,12 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
     );
   }
 
-  Widget _buildAlarmStatItem(String label, String value, IconData icon, Color color) {
+  Widget _buildAlarmStatItem(
+    String label,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
     return Container(
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -452,61 +544,6 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
       ),
     );
   }
-  
-  // NEW: Quick Presets Widget
-  Widget _buildQuickPresets() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Quick Presets',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.tonal(
-                onPressed: () {
-                  _showAddOrEditAlarmDialog(
-                    existingAlarm: Alarm(
-                      id: -1, // Use -1 to signify a preset
-                      title: 'Wake Up',
-                      time: TimeOfDay(hour: 7, minute: 0),
-                      days: {'Mon', 'Tue', 'Wed', 'Thu', 'Fri'},
-                      isActive: true,
-                      sound: 'Default Ringtone',
-                    ),
-                  );
-                },
-                child: Text('Morning (7 AM)'),
-              ),
-            ),
-            SizedBox(width: 12),
-            Expanded(
-              child: FilledButton.tonal(
-                onPressed: () {
-                  _showAddOrEditAlarmDialog(
-                    existingAlarm: Alarm(
-                      id: -1,
-                      title: 'Study Time',
-                      time: TimeOfDay(hour: 14, minute: 0),
-                      days: {'Mon', 'Wed', 'Fri'},
-                      isActive: true,
-                      sound: 'Focus Chime',
-                    ),
-                  );
-                },
-                child: Text('Study (2 PM)'),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
 
   Widget _buildAlarmsSection() {
     return Column(
@@ -514,9 +551,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
       children: [
         Text(
           'All Alarms',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
         ),
         SizedBox(height: 12),
         if (_alarms.isEmpty)
@@ -529,9 +564,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
                   SizedBox(height: 16),
                   Text(
                     'No alarms set',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Colors.grey,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey),
                   ),
                 ],
               ),
@@ -543,29 +576,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
     );
   }
 
-  // NEW: Helper widget for the day visual
-  Widget _buildDayChip(String day, bool isActive) {
-    return Container(
-      width: 28,
-      height: 28,
-      decoration: BoxDecoration(
-        color: isActive ? Colors.blue.withOpacity(0.8) : Colors.grey.shade300,
-        shape: BoxShape.circle,
-      ),
-      child: Center(
-        child: Text(
-          day.substring(0, 1), // M, T, W...
-          style: TextStyle(
-            fontSize: 12,
-            color: isActive ? Colors.white : Colors.grey.shade600,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAlarmCard(Alarm alarm) {
+  Widget _buildAlarmCard(AlarmData alarm) {
     return Card(
       margin: EdgeInsets.only(bottom: 12),
       elevation: 2,
@@ -594,8 +605,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
                           Icon(Icons.access_time, size: 16, color: Colors.blue),
                           SizedBox(width: 6),
                           Text(
-                            // UPDATED: Format TimeOfDay
-                            alarm.time.format(context),
+                            TimeOfDay.fromDateTime(alarm.time).format(context),
                             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                               color: Colors.blue,
@@ -617,7 +627,6 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
               ],
             ),
             SizedBox(height: 12),
-            // UPDATED: Replaced Wrap with visual day selector
             Container(
               padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
               decoration: BoxDecoration(
@@ -625,10 +634,18 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: _dayAbbreviations.map((day) {
-                  return _buildDayChip(day, alarm.days.contains(day));
-                }).toList(),
+                children: [
+                  Icon(Icons.calendar_today, size: 14, color: Colors.blue),
+                  SizedBox(width: 8),
+                  Text(
+                    alarm.time.toString().split(' ')[0],
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.blue,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
             ),
             SizedBox(height: 12),
@@ -643,7 +660,7 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
                   Icon(Icons.music_note, size: 14, color: Colors.purple),
                   SizedBox(width: 8),
                   Text(
-                    alarm.sound,
+                    'Default Ringtone',
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.purple,
@@ -655,25 +672,12 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
             ),
             SizedBox(height: 12),
             Row(
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () {
-                      // UPDATED: Hook up edit function
-                      _showAddOrEditAlarmDialog(existingAlarm: alarm);
-                    },
-                    child: Text('Edit'),
-                  ),
-                ),
-                SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => _deleteAlarm(alarm.id),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.red,
-                    ),
-                    child: Text('Delete'),
-                  ),
+                IconButton(
+                  icon: Icon(Icons.delete, color: Colors.red),
+                  onPressed: () => _deleteAlarm(alarm.id),
+                  tooltip: 'Delete alarm',
                 ),
               ],
             ),
@@ -737,38 +741,34 @@ class _AlarmSchedulerPageState extends State<AlarmSchedulerPage> with TickerProv
   }
 }
 
-class Alarm {
-  final int id;
+class AlarmData {
+  final String id;
   final String title;
-  final TimeOfDay time; // UPDATED
-  final Set<String> days; // UPDATED
+  final DateTime time;
   final bool isActive;
-  final String sound;
 
-  Alarm({
+  AlarmData({
     required this.id,
     required this.title,
     required this.time,
-    required this.days,
     required this.isActive,
-    required this.sound,
   });
 
-  // NEW: copyWith method for easier updates
-  Alarm copyWith({
-    String? title,
-    TimeOfDay? time,
-    Set<String>? days,
-    bool? isActive,
-    String? sound,
-  }) {
-    return Alarm(
-      id: this.id,
-      title: title ?? this.title,
-      time: time ?? this.time,
-      days: days ?? this.days,
-      isActive: isActive ?? this.isActive,
-      sound: sound ?? this.sound,
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'time': time.toIso8601String(),
+      'isActive': isActive,
+    };
+  }
+
+  factory AlarmData.fromJson(Map<String, dynamic> json) {
+    return AlarmData(
+      id: json['_id'] ?? json['id'] ?? '',
+      title: json['title'] ?? '',
+      time: DateTime.parse(json['alarm_time'] ?? json['time']),
+      isActive: json['is_active'] ?? json['isActive'] ?? true,
     );
   }
 }
